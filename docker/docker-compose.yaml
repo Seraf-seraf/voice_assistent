@@ -1,0 +1,33 @@
+services:
+  whisper-stt:
+    build:
+      context: .
+      dockerfile: whisper/Dockerfile
+      args:
+        WHISPER_CPP_REF: v1.9.0
+    container_name: whisper-stt
+    restart: always
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./models/whisper:/models:ro
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  openedai-speech:
+    image: ghcr.io/matatonic/openedai-speech-min:latest
+    container_name: openedai-speech
+    restart: always
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../openedai-speech/voices:/app/voices
+      - ../openedai-speech/config/voice_to_speaker.yaml:/app/config/voice_to_speaker.yaml

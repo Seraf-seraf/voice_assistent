@@ -1,0 +1,7 @@
+tts-1:
+  ru_RU-dmitri-medium:
+    model: voices/ru_RU-dmitri-medium/ru_RU-dmitri-medium.onnx
+    speaker:
+  ru_RU-ruslan-medium:
+    model: voices/ru_RU-ruslan-medium/ru_RU-ruslan-medium.onnx
+    speaker:
