@@ -1,0 +1,62 @@
+app:
+  mode: always
+  system_prompt: >-
+    Ты локальный голосовой ассистент. Отвечай на русском языке.
+  response_policy: >-
+    Отвечай кратко и естественно. Не озвучивай листинги кода и длинные ссылки.
+
+log:
+  level: info
+  format: text
+
+audio:
+  input_device: ""
+  output_device: ""
+  sample_rate: 16000
+  channels: 1
+  frame_ms: 20
+  buffer_frames: 64
+
+vad:
+  aggressiveness: 2
+  pre_roll: 300ms
+  min_speech: 250ms
+  end_silence: 600ms
+  max_utterance: 30s
+
+stt:
+  url: http://127.0.0.1:8081/inference
+  timeout: 45s
+  max_response_bytes: 1048576
+
+llm:
+  url: http://127.0.0.1:1234/v1/chat/completions
+  model: ""
+  temperature: 0.4
+  max_tokens: 512
+  timeout: 2m
+  stream_idle_timeout: 30s
+  max_response_bytes: 4194304
+
+tts:
+  url: http://127.0.0.1:8000/v1/audio/speech
+  model: tts-1
+  voice: ru_RU-dmitri-medium
+  format: wav
+  speed: 1.0
+  timeout: 30s
+  queue_size: 8
+  max_response_bytes: 20971520
+
+dialogue:
+  max_history_messages: 20
+
+wake:
+  phrases: ["ассистент"]
+  activation_window: 10s
+
+storage:
+  retention_days: 30
+
+control:
+  ptt_key: F8

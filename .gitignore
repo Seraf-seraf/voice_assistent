@@ -1,0 +1,6 @@
+/bin/
+/logs/
+/config/assistant.yaml
+*.exe
+*.test
+*.out
