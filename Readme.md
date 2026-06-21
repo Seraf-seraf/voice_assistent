@@ -5,7 +5,7 @@
 
 ## Требования
 
-- Go 1.24 или новее;
+- Go 1.25 или новее;
 - Docker с NVIDIA Container Toolkit для Whisper;
 - LM Studio с запущенным OpenAI-compatible API;
 - Windows-аудиоустройства; поддержка WASAPI будет добавлена на следующем этапе.
