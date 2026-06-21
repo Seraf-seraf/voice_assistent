@@ -1,0 +1,58 @@
+model = "gpt-5.5"
+model_reasoning_effort = "medium"
+project_doc_max_bytes = 60000
+
+sandbox_mode = "danger-full-access"
+approval_policy = "never"
+
+[features]
+shell_tool = true
+unified_exec = false
+shell_snapshot = false
+apply_patch_freeform = false
+exec_policy = true
+experimental_windows_sandbox = false
+elevated_windows_sandbox = false
+remote_compaction = true
+remote_models = false
+powershell_utf8 = true
+tui2 = false
+prevent_idle_sleep = true
+
+[sandbox_workspace_write]
+network_access = true
+
+[approval]
+mode = "full-auto"
+
+web_search = "live"
+
+[mcp_servers.memory]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-memory"]
+startup_timeout_sec = 120.0
+
+[mcp_servers.sequential-thinking]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+startup_timeout_sec = 120.0
+
+[mcp_servers.local-rag]
+command = "npx"
+args = ["-y", "mcp-local-rag"]
+cwd = "."
+startup_timeout_sec = 120.0
+
+[mcp_servers.local-rag.env]
+BASE_DIR = "."
+CACHE_DIR = ".codex/cache/local-rag"
+
+[mcp_servers.playwright]
+enabled = true
+command = "npx"
+args = ["-y", "@playwright/mcp@latest"]
+
+[notice]
+hide_full_access_warning = true
+
+project_root_markers = [".git"]
