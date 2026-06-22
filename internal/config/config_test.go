@@ -91,6 +91,17 @@ func TestValidateRejectsInvalidTranscriptPattern(t *testing.T) {
 	}
 }
 
+func TestValidateRequiresHistoryForCompleteTurn(t *testing.T) {
+	cfg := Default()
+	cfg.LLM.Model = "test"
+	cfg.Dialogue.MaxHistoryMessages = 1
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "max_history_messages") {
+		t.Fatalf("Validate() error = %v, want history limit error", err)
+	}
+}
+
 func TestLoadRequiresModel(t *testing.T) {
 	t.Setenv("ASSISTANT_LLM_MODEL", "")
 	_, err := Load("")

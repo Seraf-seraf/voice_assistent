@@ -389,8 +389,11 @@ func (cfg Config) Validate() error {
 	if cfg.LLM.Temperature < 0 || cfg.LLM.Temperature > 2 {
 		return errors.New("llm.temperature: значение должно быть от 0 до 2")
 	}
-	if cfg.LLM.MaxTokens <= 0 || cfg.Dialogue.MaxHistoryMessages <= 0 {
-		return errors.New("llm.max_tokens и dialogue.max_history_messages должны быть положительными")
+	if cfg.LLM.MaxTokens <= 0 {
+		return errors.New("llm.max_tokens должен быть положительным")
+	}
+	if cfg.Dialogue.MaxHistoryMessages < 2 {
+		return errors.New("dialogue.max_history_messages должен быть не меньше 2")
 	}
 	if cfg.Transcript.MinSignificantRunes <= 0 {
 		return errors.New("transcript.min_significant_runes должен быть положительным")
