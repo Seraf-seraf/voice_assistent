@@ -51,6 +51,12 @@ tts:
 dialogue:
   max_history_messages: 20
 
+transcript:
+  min_significant_runes: 2
+  ignored_exact: ["а", "э", "ээ", "эм"]
+  ignored_patterns:
+    - '^субтитры (сделал|создал).*$'
+
 wake:
   phrases: ["ассистент"]
   activation_window: 10s

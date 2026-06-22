@@ -14,6 +14,8 @@ func TestLoadUsesDefaultsAndEnvironment(t *testing.T) {
 	t.Setenv("ASSISTANT_MAX_HISTORY_MESSAGES", "12")
 	t.Setenv("ASSISTANT_VAD_END_SILENCE", "900ms")
 	t.Setenv("ASSISTANT_WAKE_PHRASES", "ассистент, компьютер")
+	t.Setenv("ASSISTANT_TRANSCRIPT_MIN_RUNES", "3")
+	t.Setenv("ASSISTANT_TRANSCRIPT_IGNORED_EXACT", "ээ, тест")
 
 	cfg, err := Load("")
 	if err != nil {
@@ -30,6 +32,9 @@ func TestLoadUsesDefaultsAndEnvironment(t *testing.T) {
 	}
 	if len(cfg.Wake.Phrases) != 2 || cfg.Wake.Phrases[1] != "компьютер" {
 		t.Fatalf("Wake.Phrases = %v, want two phrases", cfg.Wake.Phrases)
+	}
+	if cfg.Transcript.MinSignificantRunes != 3 || len(cfg.Transcript.IgnoredExact) != 2 {
+		t.Fatalf("Transcript config = %+v", cfg.Transcript)
 	}
 }
 
@@ -72,6 +77,17 @@ func TestValidateRejectsCredentialsInURL(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil || !strings.Contains(err.Error(), "credentials") {
 		t.Fatalf("Validate() error = %v, want credentials error", err)
+	}
+}
+
+func TestValidateRejectsInvalidTranscriptPattern(t *testing.T) {
+	cfg := Default()
+	cfg.LLM.Model = "test"
+	cfg.Transcript.IgnoredPatterns = []string{"["}
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "ignored_patterns") {
+		t.Fatalf("Validate() error = %v, want regexp error", err)
 	}
 }
 

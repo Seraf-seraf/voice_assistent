@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -41,17 +42,18 @@ func (d Duration) Std() time.Duration {
 }
 
 type Config struct {
-	App      AppConfig      `yaml:"app"`
-	Log      LogConfig      `yaml:"log"`
-	Audio    AudioConfig    `yaml:"audio"`
-	VAD      VADConfig      `yaml:"vad"`
-	STT      STTConfig      `yaml:"stt"`
-	LLM      LLMConfig      `yaml:"llm"`
-	TTS      TTSConfig      `yaml:"tts"`
-	Dialogue DialogueConfig `yaml:"dialogue"`
-	Wake     WakeConfig     `yaml:"wake"`
-	Storage  StorageConfig  `yaml:"storage"`
-	Control  ControlConfig  `yaml:"control"`
+	App        AppConfig        `yaml:"app"`
+	Log        LogConfig        `yaml:"log"`
+	Audio      AudioConfig      `yaml:"audio"`
+	VAD        VADConfig        `yaml:"vad"`
+	STT        STTConfig        `yaml:"stt"`
+	LLM        LLMConfig        `yaml:"llm"`
+	TTS        TTSConfig        `yaml:"tts"`
+	Dialogue   DialogueConfig   `yaml:"dialogue"`
+	Transcript TranscriptConfig `yaml:"transcript"`
+	Wake       WakeConfig       `yaml:"wake"`
+	Storage    StorageConfig    `yaml:"storage"`
+	Control    ControlConfig    `yaml:"control"`
 }
 
 type AppConfig struct {
@@ -116,6 +118,12 @@ type DialogueConfig struct {
 	MaxHistoryMessages int `yaml:"max_history_messages"`
 }
 
+type TranscriptConfig struct {
+	MinSignificantRunes int      `yaml:"min_significant_runes"`
+	IgnoredExact        []string `yaml:"ignored_exact"`
+	IgnoredPatterns     []string `yaml:"ignored_patterns"`
+}
+
 type WakeConfig struct {
 	Phrases          []string `yaml:"phrases"`
 	ActivationWindow Duration `yaml:"activation_window"`
@@ -164,6 +172,11 @@ func Default() Config {
 			QueueSize: 8, MaxResponseBytes: 20 << 20,
 		},
 		Dialogue: DialogueConfig{MaxHistoryMessages: 20},
+		Transcript: TranscriptConfig{
+			MinSignificantRunes: 2,
+			IgnoredExact:        []string{"а", "э", "ээ", "эм"},
+			IgnoredPatterns:     []string{`^субтитры (сделал|создал).*$`},
+		},
 		Wake: WakeConfig{
 			Phrases: []string{"ассистент"}, ActivationWindow: Duration(10 * time.Second),
 		},
@@ -262,6 +275,7 @@ func applyEnvironment(cfg *Config) error {
 		"ASSISTANT_TTS_QUEUE_SIZE":          intSetter(&cfg.TTS.QueueSize),
 		"ASSISTANT_TTS_MAX_RESPONSE_BYTES":  int64Setter(&cfg.TTS.MaxResponseBytes),
 		"ASSISTANT_MAX_HISTORY_MESSAGES":    intSetter(&cfg.Dialogue.MaxHistoryMessages),
+		"ASSISTANT_TRANSCRIPT_MIN_RUNES":    intSetter(&cfg.Transcript.MinSignificantRunes),
 		"ASSISTANT_WAKE_ACTIVATION_WINDOW":  durationSetter(&cfg.Wake.ActivationWindow),
 		"ASSISTANT_RETENTION_DAYS":          intSetter(&cfg.Storage.RetentionDays),
 	}
@@ -274,6 +288,12 @@ func applyEnvironment(cfg *Config) error {
 	}
 	if raw, ok := os.LookupEnv("ASSISTANT_WAKE_PHRASES"); ok {
 		cfg.Wake.Phrases = splitNonEmpty(raw)
+	}
+	if raw, ok := os.LookupEnv("ASSISTANT_TRANSCRIPT_IGNORED_EXACT"); ok {
+		cfg.Transcript.IgnoredExact = splitNonEmpty(raw)
+	}
+	if raw, ok := os.LookupEnv("ASSISTANT_TRANSCRIPT_IGNORED_PATTERNS"); ok {
+		cfg.Transcript.IgnoredPatterns = splitNonEmpty(raw)
 	}
 	return nil
 }
@@ -371,6 +391,19 @@ func (cfg Config) Validate() error {
 	}
 	if cfg.LLM.MaxTokens <= 0 || cfg.Dialogue.MaxHistoryMessages <= 0 {
 		return errors.New("llm.max_tokens и dialogue.max_history_messages должны быть положительными")
+	}
+	if cfg.Transcript.MinSignificantRunes <= 0 {
+		return errors.New("transcript.min_significant_runes должен быть положительным")
+	}
+	for _, phrase := range cfg.Transcript.IgnoredExact {
+		if strings.TrimSpace(phrase) == "" {
+			return errors.New("transcript.ignored_exact не может содержать пустые фразы")
+		}
+	}
+	for _, pattern := range cfg.Transcript.IgnoredPatterns {
+		if _, err := regexp.Compile(pattern); err != nil {
+			return fmt.Errorf("transcript.ignored_patterns: некорректный regexp %q: %w", pattern, err)
+		}
 	}
 	if cfg.TTS.Model == "" || cfg.TTS.Voice == "" || cfg.TTS.Format != "wav" {
 		return errors.New("tts: model и voice обязательны, format должен быть wav")
