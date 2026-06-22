@@ -41,7 +41,7 @@ func NewNormalizer(options Options) (*Normalizer, error) {
 		ignoredPatterns:     make([]*regexp.Regexp, 0, len(options.IgnoredPatterns)),
 	}
 	for _, value := range options.IgnoredExact {
-		canonical := canonicalize(value)
+		canonical := Canonicalize(value)
 		if canonical == "" {
 			return nil, errors.New("ignored exact phrase не может быть пустой")
 		}
@@ -62,7 +62,7 @@ func (n *Normalizer) Normalize(raw string) (Result, error) {
 	if text == "" {
 		return Result{}, ErrEmpty
 	}
-	canonical := canonicalize(text)
+	canonical := Canonicalize(text)
 	if _, ignored := n.ignoredExact[canonical]; ignored {
 		return Result{}, ErrFiltered
 	}
@@ -77,7 +77,8 @@ func (n *Normalizer) Normalize(raw string) (Result, error) {
 	return Result{Text: text, Canonical: canonical}, nil
 }
 
-func canonicalize(value string) string {
+// Canonicalize создаёт строку для детерминированного сравнения команд.
+func Canonicalize(value string) string {
 	value = strings.Join(strings.Fields(value), " ")
 	value = strings.ToLower(value)
 	value = strings.ReplaceAll(value, "ё", "е")
