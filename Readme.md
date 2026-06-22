@@ -7,6 +7,7 @@
 
 - Go 1.25 или новее;
 - CGO и GCC-compatible C compiler для сборки аудиовхода через miniaudio;
+- CGO для глобальной hold-PTT клавиши в Windows;
 - Docker с NVIDIA Container Toolkit для Whisper;
 - LM Studio с запущенным OpenAI-compatible API;
 - Windows-аудиоустройства, доступные через WASAPI.
