@@ -1,5 +1,6 @@
 /bin/
 /logs/
+/lancedb/
 /config/assistant.yaml
 *.exe
 *.test

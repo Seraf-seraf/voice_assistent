@@ -1,7 +1,8 @@
 # Voice Assistant
 
-Локальный голосовой ассистент на Go. Приложение запускается на Windows и управляет
-аудиотрактом и внешними сервисами Whisper, LM Studio и Piper/OpenedAI Speech.
+Локальный голосовой ассистент на Go. В репозитории есть захват и framing аудио,
+VAD, STT-клиент, а также каркас dialogue/control. Сейчас `main.go` загружает
+конфигурацию и logger; сквозной runtime аудиотракта ещё не собран.
 
 ## Требования
 
@@ -9,20 +10,18 @@
 - CGO и GCC-compatible C compiler для сборки аудиовхода через miniaudio;
 - CGO для глобальной hold-PTT клавиши в Windows;
 - Docker с NVIDIA Container Toolkit для Whisper;
-- LM Studio с запущенным OpenAI-compatible API;
 - Windows-аудиоустройства, доступные через WASAPI.
 
 ## Настройка
 
-Скопируйте пример конфигурации и укажите точный идентификатор модели из LM Studio:
+Скопируйте пример конфигурации:
 
 ```bash
 cp config/assistant.example.yaml config/assistant.yaml
 ```
 
-API-токены не записываются в YAML. При необходимости используйте переменные
-`ASSISTANT_STT_API_KEY`, `ASSISTANT_LLM_API_KEY` и `ASSISTANT_TTS_API_KEY`.
-Остальные поддерживаемые overrides перечислены в `internal/config/config.go`.
+STT API-токен не записывается в YAML. При необходимости используйте переменную
+`ASSISTANT_STT_API_KEY`. Поддерживаемые overrides перечислены в `internal/config/config.go`.
 
 ## Команды
 
@@ -35,7 +34,6 @@ make build-windows # сборка Windows executable
 make run           # запуск с config/assistant.yaml
 make up            # запуск Docker-сервисов
 make down          # остановка Docker-сервисов
-make tts           # отдельный запуск контейнера OpenedAI Speech
 make webui         # запуск Open WebUI
 ```
 

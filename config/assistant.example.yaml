@@ -30,23 +30,9 @@ stt:
   max_response_bytes: 1048576
 
 llm:
-  url: http://127.0.0.1:1234/v1/chat/completions
   model: ""
   temperature: 0.4
   max_tokens: 512
-  timeout: 2m
-  stream_idle_timeout: 30s
-  max_response_bytes: 4194304
-
-tts:
-  url: http://127.0.0.1:8000/v1/audio/speech
-  model: tts-1
-  voice: ru_RU-dmitri-medium
-  format: wav
-  speed: 1.0
-  timeout: 30s
-  queue_size: 8
-  max_response_bytes: 20971520
 
 dialogue:
   max_history_messages: 20
@@ -60,9 +46,6 @@ transcript:
 wake:
   phrases: ["ассистент"]
   activation_window: 10s
-
-storage:
-  retention_days: 30
 
 control:
   ptt_key: F8

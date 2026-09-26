@@ -102,26 +102,27 @@ func TestValidateRequiresHistoryForCompleteTurn(t *testing.T) {
 	}
 }
 
-func TestLoadRequiresModel(t *testing.T) {
+func TestLoadAllowsUnconfiguredModel(t *testing.T) {
 	t.Setenv("ASSISTANT_LLM_MODEL", "")
-	_, err := Load("")
-	if err == nil || !strings.Contains(err.Error(), "llm.model") {
-		t.Fatalf("Load() error = %v, want missing model error", err)
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.LLM.Model != "" {
+		t.Fatalf("LLM.Model = %q, want empty", cfg.LLM.Model)
 	}
 }
 
 func TestLoadRejectsInvalidEnvironment(t *testing.T) {
-	t.Setenv("ASSISTANT_LLM_MODEL", "test")
-	t.Setenv("ASSISTANT_TTS_SPEED", "fast")
+	t.Setenv("ASSISTANT_LLM_TEMPERATURE", "hot")
 
 	_, err := Load("")
-	if err == nil || !strings.Contains(err.Error(), "ASSISTANT_TTS_SPEED") {
+	if err == nil || !strings.Contains(err.Error(), "ASSISTANT_LLM_TEMPERATURE") {
 		t.Fatalf("Load() error = %v, want environment parsing error", err)
 	}
 }
 
 func TestExampleConfiguration(t *testing.T) {
-	t.Setenv("ASSISTANT_LLM_MODEL", "test")
 	path := filepath.Join("..", "..", "config", "assistant.example.yaml")
 
 	if _, err := Load(path); err != nil {

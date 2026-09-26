@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/url"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -48,11 +47,9 @@ type Config struct {
 	VAD        VADConfig        `yaml:"vad"`
 	STT        STTConfig        `yaml:"stt"`
 	LLM        LLMConfig        `yaml:"llm"`
-	TTS        TTSConfig        `yaml:"tts"`
 	Dialogue   DialogueConfig   `yaml:"dialogue"`
 	Transcript TranscriptConfig `yaml:"transcript"`
 	Wake       WakeConfig       `yaml:"wake"`
-	Storage    StorageConfig    `yaml:"storage"`
 	Control    ControlConfig    `yaml:"control"`
 }
 
@@ -92,26 +89,9 @@ type STTConfig struct {
 }
 
 type LLMConfig struct {
-	URL              string   `yaml:"url"`
-	Model            string   `yaml:"model"`
-	Temperature      float64  `yaml:"temperature"`
-	MaxTokens        int      `yaml:"max_tokens"`
-	Timeout          Duration `yaml:"timeout"`
-	StreamIdle       Duration `yaml:"stream_idle_timeout"`
-	MaxResponseBytes int64    `yaml:"max_response_bytes"`
-	APIKey           string   `yaml:"-"`
-}
-
-type TTSConfig struct {
-	URL              string   `yaml:"url"`
-	Model            string   `yaml:"model"`
-	Voice            string   `yaml:"voice"`
-	Format           string   `yaml:"format"`
-	Speed            float64  `yaml:"speed"`
-	Timeout          Duration `yaml:"timeout"`
-	QueueSize        int      `yaml:"queue_size"`
-	MaxResponseBytes int64    `yaml:"max_response_bytes"`
-	APIKey           string   `yaml:"-"`
+	Model       string  `yaml:"model"`
+	Temperature float64 `yaml:"temperature"`
+	MaxTokens   int     `yaml:"max_tokens"`
 }
 
 type DialogueConfig struct {
@@ -161,16 +141,7 @@ func Default() Config {
 			URL: "http://127.0.0.1:8081/inference", Timeout: Duration(45 * time.Second),
 			MaxResponseBytes: 1 << 20,
 		},
-		LLM: LLMConfig{
-			URL: "http://127.0.0.1:1234/v1/chat/completions", Temperature: 0.4,
-			MaxTokens: 512, Timeout: Duration(2 * time.Minute), StreamIdle: Duration(30 * time.Second),
-			MaxResponseBytes: 4 << 20,
-		},
-		TTS: TTSConfig{
-			URL: "http://127.0.0.1:8000/v1/audio/speech", Model: "tts-1",
-			Voice: "ru_RU-dmitri-medium", Format: "wav", Speed: 1, Timeout: Duration(30 * time.Second),
-			QueueSize: 8, MaxResponseBytes: 20 << 20,
-		},
+		LLM:      LLMConfig{Temperature: 0.4, MaxTokens: 512},
 		Dialogue: DialogueConfig{MaxHistoryMessages: 20},
 		Transcript: TranscriptConfig{
 			MinSignificantRunes: 2,
@@ -180,7 +151,6 @@ func Default() Config {
 		Wake: WakeConfig{
 			Phrases: []string{"ассистент"}, ActivationWindow: Duration(10 * time.Second),
 		},
-		Storage: StorageConfig{ConversationsDir: defaultConversationsDir(), RetentionDays: 30},
 		Control: ControlConfig{PTTKey: "F8"},
 	}
 }
@@ -237,14 +207,7 @@ func applyEnvironment(cfg *Config) error {
 		{"ASSISTANT_AUDIO_OUTPUT_DEVICE", &cfg.Audio.OutputDevice},
 		{"ASSISTANT_STT_URL", &cfg.STT.URL},
 		{"ASSISTANT_STT_API_KEY", &cfg.STT.APIKey},
-		{"ASSISTANT_LLM_URL", &cfg.LLM.URL},
 		{"ASSISTANT_LLM_MODEL", &cfg.LLM.Model},
-		{"ASSISTANT_LLM_API_KEY", &cfg.LLM.APIKey},
-		{"ASSISTANT_TTS_URL", &cfg.TTS.URL},
-		{"ASSISTANT_TTS_MODEL", &cfg.TTS.Model},
-		{"ASSISTANT_TTS_VOICE", &cfg.TTS.Voice},
-		{"ASSISTANT_TTS_API_KEY", &cfg.TTS.APIKey},
-		{"ASSISTANT_STORAGE_DIR", &cfg.Storage.ConversationsDir},
 		{"ASSISTANT_PTT_KEY", &cfg.Control.PTTKey},
 	}
 	for _, value := range stringValues {
@@ -254,30 +217,22 @@ func applyEnvironment(cfg *Config) error {
 	}
 
 	setters := map[string]func(string) error{
-		"ASSISTANT_AUDIO_SAMPLE_RATE":       intSetter(&cfg.Audio.SampleRate),
-		"ASSISTANT_AUDIO_CHANNELS":          intSetter(&cfg.Audio.Channels),
-		"ASSISTANT_AUDIO_FRAME_MS":          intSetter(&cfg.Audio.FrameMS),
-		"ASSISTANT_AUDIO_BUFFER_FRAMES":     intSetter(&cfg.Audio.BufferFrames),
-		"ASSISTANT_VAD_AGGRESSIVENESS":      intSetter(&cfg.VAD.Aggressiveness),
-		"ASSISTANT_VAD_PRE_ROLL":            durationSetter(&cfg.VAD.PreRoll),
-		"ASSISTANT_VAD_MIN_SPEECH":          durationSetter(&cfg.VAD.MinSpeech),
-		"ASSISTANT_VAD_END_SILENCE":         durationSetter(&cfg.VAD.EndSilence),
-		"ASSISTANT_VAD_MAX_UTTERANCE":       durationSetter(&cfg.VAD.MaxUtterance),
-		"ASSISTANT_STT_TIMEOUT":             durationSetter(&cfg.STT.Timeout),
-		"ASSISTANT_STT_MAX_RESPONSE_BYTES":  int64Setter(&cfg.STT.MaxResponseBytes),
-		"ASSISTANT_LLM_TEMPERATURE":         floatSetter(&cfg.LLM.Temperature),
-		"ASSISTANT_LLM_MAX_TOKENS":          intSetter(&cfg.LLM.MaxTokens),
-		"ASSISTANT_LLM_TIMEOUT":             durationSetter(&cfg.LLM.Timeout),
-		"ASSISTANT_LLM_STREAM_IDLE_TIMEOUT": durationSetter(&cfg.LLM.StreamIdle),
-		"ASSISTANT_LLM_MAX_RESPONSE_BYTES":  int64Setter(&cfg.LLM.MaxResponseBytes),
-		"ASSISTANT_TTS_SPEED":               floatSetter(&cfg.TTS.Speed),
-		"ASSISTANT_TTS_TIMEOUT":             durationSetter(&cfg.TTS.Timeout),
-		"ASSISTANT_TTS_QUEUE_SIZE":          intSetter(&cfg.TTS.QueueSize),
-		"ASSISTANT_TTS_MAX_RESPONSE_BYTES":  int64Setter(&cfg.TTS.MaxResponseBytes),
-		"ASSISTANT_MAX_HISTORY_MESSAGES":    intSetter(&cfg.Dialogue.MaxHistoryMessages),
-		"ASSISTANT_TRANSCRIPT_MIN_RUNES":    intSetter(&cfg.Transcript.MinSignificantRunes),
-		"ASSISTANT_WAKE_ACTIVATION_WINDOW":  durationSetter(&cfg.Wake.ActivationWindow),
-		"ASSISTANT_RETENTION_DAYS":          intSetter(&cfg.Storage.RetentionDays),
+		"ASSISTANT_AUDIO_SAMPLE_RATE":      intSetter(&cfg.Audio.SampleRate),
+		"ASSISTANT_AUDIO_CHANNELS":         intSetter(&cfg.Audio.Channels),
+		"ASSISTANT_AUDIO_FRAME_MS":         intSetter(&cfg.Audio.FrameMS),
+		"ASSISTANT_AUDIO_BUFFER_FRAMES":    intSetter(&cfg.Audio.BufferFrames),
+		"ASSISTANT_VAD_AGGRESSIVENESS":     intSetter(&cfg.VAD.Aggressiveness),
+		"ASSISTANT_VAD_PRE_ROLL":           durationSetter(&cfg.VAD.PreRoll),
+		"ASSISTANT_VAD_MIN_SPEECH":         durationSetter(&cfg.VAD.MinSpeech),
+		"ASSISTANT_VAD_END_SILENCE":        durationSetter(&cfg.VAD.EndSilence),
+		"ASSISTANT_VAD_MAX_UTTERANCE":      durationSetter(&cfg.VAD.MaxUtterance),
+		"ASSISTANT_STT_TIMEOUT":            durationSetter(&cfg.STT.Timeout),
+		"ASSISTANT_STT_MAX_RESPONSE_BYTES": int64Setter(&cfg.STT.MaxResponseBytes),
+		"ASSISTANT_LLM_TEMPERATURE":        floatSetter(&cfg.LLM.Temperature),
+		"ASSISTANT_LLM_MAX_TOKENS":         intSetter(&cfg.LLM.MaxTokens),
+		"ASSISTANT_MAX_HISTORY_MESSAGES":   intSetter(&cfg.Dialogue.MaxHistoryMessages),
+		"ASSISTANT_TRANSCRIPT_MIN_RUNES":   intSetter(&cfg.Transcript.MinSignificantRunes),
+		"ASSISTANT_WAKE_ACTIVATION_WINDOW": durationSetter(&cfg.Wake.ActivationWindow),
 	}
 	for name, setter := range setters {
 		if raw, ok := os.LookupEnv(name); ok {
@@ -378,13 +333,8 @@ func (cfg Config) Validate() error {
 	if cfg.VAD.MaxUtterance <= cfg.VAD.MinSpeech {
 		return errors.New("vad.max_utterance должен быть больше vad.min_speech")
 	}
-	for name, value := range map[string]string{"stt.url": cfg.STT.URL, "llm.url": cfg.LLM.URL, "tts.url": cfg.TTS.URL} {
-		if err := validateServiceURL(value); err != nil {
-			return fmt.Errorf("%s: %w", name, err)
-		}
-	}
-	if strings.TrimSpace(cfg.LLM.Model) == "" {
-		return errors.New("llm.model: значение обязательно")
+	if err := validateServiceURL(cfg.STT.URL); err != nil {
+		return fmt.Errorf("stt.url: %w", err)
 	}
 	if cfg.LLM.Temperature < 0 || cfg.LLM.Temperature > 2 {
 		return errors.New("llm.temperature: значение должно быть от 0 до 2")
@@ -408,17 +358,8 @@ func (cfg Config) Validate() error {
 			return fmt.Errorf("transcript.ignored_patterns: некорректный regexp %q: %w", pattern, err)
 		}
 	}
-	if cfg.TTS.Model == "" || cfg.TTS.Voice == "" || cfg.TTS.Format != "wav" {
-		return errors.New("tts: model и voice обязательны, format должен быть wav")
-	}
-	if cfg.TTS.Speed < 0.25 || cfg.TTS.Speed > 4 || cfg.TTS.QueueSize <= 0 {
-		return errors.New("tts: speed должен быть от 0.25 до 4, queue_size должен быть положительным")
-	}
 	if len(cfg.Wake.Phrases) == 0 || cfg.Wake.ActivationWindow <= 0 {
 		return errors.New("wake: нужна хотя бы одна фраза и положительное activation_window")
-	}
-	if cfg.Storage.RetentionDays < 0 || strings.TrimSpace(cfg.Storage.ConversationsDir) == "" {
-		return errors.New("storage: retention_days не может быть отрицательным, conversations_dir обязателен")
 	}
 	if strings.TrimSpace(cfg.Control.PTTKey) == "" {
 		return errors.New("control.ptt_key: значение обязательно")
@@ -427,20 +368,13 @@ func (cfg Config) Validate() error {
 }
 
 func validateLimits(cfg Config) error {
-	durations := map[string]Duration{
-		"stt.timeout": cfg.STT.Timeout, "llm.timeout": cfg.LLM.Timeout,
-		"llm.stream_idle_timeout": cfg.LLM.StreamIdle, "tts.timeout": cfg.TTS.Timeout,
-	}
+	durations := map[string]Duration{"stt.timeout": cfg.STT.Timeout}
 	for name, value := range durations {
 		if value <= 0 {
 			return fmt.Errorf("%s: значение должно быть положительным", name)
 		}
 	}
-	limits := map[string]int64{
-		"stt.max_response_bytes": cfg.STT.MaxResponseBytes,
-		"llm.max_response_bytes": cfg.LLM.MaxResponseBytes,
-		"tts.max_response_bytes": cfg.TTS.MaxResponseBytes,
-	}
+	limits := map[string]int64{"stt.max_response_bytes": cfg.STT.MaxResponseBytes}
 	for name, value := range limits {
 		if value <= 0 {
 			return fmt.Errorf("%s: значение должно быть положительным", name)
@@ -464,12 +398,4 @@ func validateServiceURL(raw string) error {
 		return errors.New("credentials внутри URL запрещены")
 	}
 	return nil
-}
-
-func defaultConversationsDir() string {
-	dir, err := os.UserCacheDir()
-	if err != nil || dir == "" {
-		return filepath.Join("logs", "conversations")
-	}
-	return filepath.Join(dir, "VoiceAssistant", "conversations")
 }
