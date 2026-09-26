@@ -25,7 +25,10 @@ func run() error {
 		return fmt.Errorf("загрузить конфигурацию: %w", err)
 	}
 
-	log, err := logger.New(cfg.Log)
+	log, err := logger.New(logger.Options{
+		Level:  cfg.Log.Level,
+		Format: cfg.Log.Format,
+	})
 	if err != nil {
 		return fmt.Errorf("создать logger: %w", err)
 	}

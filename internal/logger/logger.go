@@ -5,27 +5,30 @@ import (
 	"io"
 	"log/slog"
 	"os"
-
-	"github.com/Seraf-seraf/voice_assistent/internal/config"
 )
 
-func New(cfg config.LogConfig) (*slog.Logger, error) {
-	return NewWithWriter(cfg, os.Stderr)
+type Options struct {
+	Level  string
+	Format string
 }
 
-func NewWithWriter(cfg config.LogConfig, output io.Writer) (*slog.Logger, error) {
-	level, err := parseLevel(cfg.Level)
+func New(options Options) (*slog.Logger, error) {
+	return NewWithWriter(options, os.Stderr)
+}
+
+func NewWithWriter(options Options, output io.Writer) (*slog.Logger, error) {
+	level, err := parseLevel(options.Level)
 	if err != nil {
 		return nil, err
 	}
-	options := &slog.HandlerOptions{Level: level}
+	handlerOptions := &slog.HandlerOptions{Level: level}
 
 	var handler slog.Handler
-	switch cfg.Format {
+	switch options.Format {
 	case "text":
-		handler = slog.NewTextHandler(output, options)
+		handler = slog.NewTextHandler(output, handlerOptions)
 	case "json":
-		handler = slog.NewJSONHandler(output, options)
+		handler = slog.NewJSONHandler(output, handlerOptions)
 	default:
 		return nil, errors.New("неизвестный формат логов")
 	}

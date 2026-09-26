@@ -4,13 +4,11 @@ import (
 	"bytes"
 	"strings"
 	"testing"
-
-	"github.com/Seraf-seraf/voice_assistent/internal/config"
 )
 
 func TestNewWithWriterRespectsLevel(t *testing.T) {
 	var output bytes.Buffer
-	log, err := NewWithWriter(config.LogConfig{Level: "info", Format: "json"}, &output)
+	log, err := NewWithWriter(Options{Level: "info", Format: "json"}, &output)
 	if err != nil {
 		t.Fatalf("NewWithWriter() error: %v", err)
 	}
@@ -25,12 +23,12 @@ func TestNewWithWriterRespectsLevel(t *testing.T) {
 }
 
 func TestNewWithWriterRejectsInvalidOptions(t *testing.T) {
-	for _, cfg := range []config.LogConfig{
+	for _, options := range []Options{
 		{Level: "trace", Format: "text"},
 		{Level: "info", Format: "xml"},
 	} {
-		if _, err := NewWithWriter(cfg, &bytes.Buffer{}); err == nil {
-			t.Fatalf("NewWithWriter(%+v) succeeded, want error", cfg)
+		if _, err := NewWithWriter(options, &bytes.Buffer{}); err == nil {
+			t.Fatalf("NewWithWriter(%+v) succeeded, want error", options)
 		}
 	}
 }
