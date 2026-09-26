@@ -21,7 +21,10 @@ type vadComponents struct {
 	segmenter *vad.Segmenter
 }
 
-const speechEventQueueSize = 2
+const (
+	speechEventQueueSize   = 2
+	transcriptionQueueSize = 1
+)
 
 type audioInputComponents struct {
 	source   input.Source
@@ -103,18 +106,13 @@ func newSTTClient(cfg config.STTConfig) (stt.Client, error) {
 	return client, nil
 }
 
-func newAssistantRuntime(audioListener *listener.Listener, log *slog.Logger) (*assistant.Runtime, error) {
-	return assistant.NewRuntime(audioListener, func(_ context.Context, event vad.Event) error {
-		switch speechEvent := event.(type) {
-		case vad.SpeechStarted:
-			log.Debug("Началась речь", "at", speechEvent.At)
-		case vad.SpeechEnded:
-			log.Debug(
-				"Речь завершена",
-				"utterance_id", speechEvent.Utterance.ID,
-				"duration", speechEvent.Utterance.Duration(),
-			)
-		}
+func newTranscriber(client stt.Client, log *slog.Logger) (*assistant.Transcriber, error) {
+	return assistant.NewTranscriber(client, func(_ context.Context, result assistant.Transcription) error {
+		log.Debug("Речь распознана", "utterance_id", result.UtteranceID, "stt_duration", result.Duration)
 		return nil
-	})
+	}, transcriptionQueueSize)
+}
+
+func newAssistantRuntime(audioListener *listener.Listener, transcriber *assistant.Transcriber) (*assistant.Runtime, error) {
+	return assistant.NewRuntime(audioListener, transcriber)
 }

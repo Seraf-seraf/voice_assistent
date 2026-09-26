@@ -1,8 +1,9 @@
 # Voice Assistant
 
-Локальный голосовой ассистент на Go. Приложение запускает microphone/VAD runtime
-и обрабатывает события `SpeechStarted`/`SpeechEnded`. STT-клиент создаётся, но
-транскрипция ещё не подключена. Dialogue/control остаются каркасом.
+Локальный голосовой ассистент на Go. Приложение получает звук с microphone,
+сегментирует речь через VAD и отправляет завершённые utterance в STT/Whisper.
+Результат пока остаётся raw transcription. Normalization, router и dialogue
+ещё не подключены.
 
 ## Требования
 
@@ -36,6 +37,5 @@ make up            # запуск Docker-сервисов
 make down          # остановка Docker-сервисов
 ```
 
-Приложение запускает microphone/VAD runtime и обрабатывает
-`SpeechStarted`/`SpeechEnded`. STT-клиент создан, но транскрипция ещё не
-подключена: аудио не отправляется в STT.
+Тракт обработки: microphone → VAD → utterance → STT/Whisper → raw
+transcription. Normalization/router/dialogue ещё не подключены.

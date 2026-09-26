@@ -18,10 +18,18 @@ func TestNewAudioFormat(t *testing.T) {
 	}
 }
 
-func TestNewAssistantRuntimeRequiresListener(t *testing.T) {
+func TestNewTranscriberAndAssistantRuntimeRequireDependencies(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if _, err := newAssistantRuntime(nil, log); err == nil {
-		t.Fatal("newAssistantRuntime(nil, log) succeeded")
+	client, err := newSTTClient(config.Default().STT)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transcriber, err := newTranscriber(client, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newAssistantRuntime(nil, transcriber); err == nil {
+		t.Fatal("newAssistantRuntime(nil, transcriber) succeeded")
 	}
 }
 

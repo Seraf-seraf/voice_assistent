@@ -19,120 +19,175 @@ type fakeListener struct {
 }
 
 func newFakeListener(run func(context.Context) error, events ...vad.Event) *fakeListener {
-	eventChannel := make(chan vad.Event, len(events))
+	channel := make(chan vad.Event, len(events))
 	for _, event := range events {
-		eventChannel <- event
+		channel <- event
 	}
-	return &fakeListener{events: eventChannel, run: run, started: make(chan struct{})}
+	return &fakeListener{events: channel, run: run, started: make(chan struct{})}
 }
-
 func (l *fakeListener) Run(ctx context.Context) error {
 	l.startOnce.Do(func() { close(l.started) })
-	err := l.run(ctx)
-	close(l.events)
-	return err
+	defer close(l.events)
+	return l.run(ctx)
+}
+func (l *fakeListener) Events() <-chan vad.Event { return l.events }
+
+type fakePipeline struct {
+	handle    func(context.Context, vad.Event) error
+	run       func(context.Context) error
+	closeOnce sync.Once
+	closed    chan struct{}
+	started   chan struct{}
 }
 
-func (l *fakeListener) Events() <-chan vad.Event {
-	return l.events
+func newFakePipeline() *fakePipeline {
+	return &fakePipeline{closed: make(chan struct{}), started: make(chan struct{})}
 }
+func (p *fakePipeline) Handle(ctx context.Context, event vad.Event) error {
+	return p.handle(ctx, event)
+}
+func (p *fakePipeline) Run(ctx context.Context) error {
+	close(p.started)
+	if p.run != nil {
+		return p.run(ctx)
+	}
+	<-p.closed
+	return nil
+}
+func (p *fakePipeline) CloseInput() { p.closeOnce.Do(func() { close(p.closed) }) }
 
-func TestRuntimeDeliversQueuedEventsInOrderBeforeListenerReturns(t *testing.T) {
-	first := vad.SpeechStarted{}
-	second := vad.SpeechEnded{}
+func TestRuntimeDrainsEventsAndClosesPipelineInput(t *testing.T) {
+	first, second := vad.SpeechStarted{}, vad.SpeechEnded{}
 	listener := newFakeListener(func(context.Context) error { return nil }, first, second)
+	pipeline := newFakePipeline()
 	var received []vad.Event
-	runtime, err := NewRuntime(listener, func(_ context.Context, event vad.Event) error {
-		received = append(received, event)
-		return nil
-	})
+	pipeline.handle = func(_ context.Context, event vad.Event) error { received = append(received, event); return nil }
+	runtime, err := NewRuntime(listener, pipeline)
 	if err != nil {
-		t.Fatalf("NewRuntime() error: %v", err)
+		t.Fatal(err)
 	}
 	if err := runtime.Run(context.Background()); err != nil {
-		t.Fatalf("Runtime.Run() error: %v", err)
+		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(received, []vad.Event{first, second}) {
-		t.Fatalf("received events = %#v, want original order", received)
+		t.Fatalf("received=%#v", received)
+	}
+	select {
+	case <-pipeline.closed:
+	default:
+		t.Fatal("pipeline input was not closed")
 	}
 }
 
-func TestRuntimeStartsListenerAndStopsOnContextCancellation(t *testing.T) {
-	listener := newFakeListener(func(ctx context.Context) error {
-		<-ctx.Done()
+func TestRuntimeWaitsForQueuedPipelineWorkAfterListenerEOF(t *testing.T) {
+	listener := newFakeListener(func(context.Context) error { return nil }, vad.SpeechEnded{})
+	pipeline := newFakePipeline()
+	workDone := make(chan struct{})
+	pipeline.handle = func(context.Context, vad.Event) error { return nil }
+	pipeline.run = func(ctx context.Context) error {
+		<-pipeline.closed
+		close(workDone)
 		return nil
-	}, vad.SpeechStarted{})
-	handlerStarted := make(chan struct{})
-	runtime, err := NewRuntime(listener, func(ctx context.Context, _ vad.Event) error {
-		close(handlerStarted)
-		<-ctx.Done()
-		return ctx.Err()
-	})
+	}
+	runtime, err := NewRuntime(listener, pipeline)
 	if err != nil {
-		t.Fatalf("NewRuntime() error: %v", err)
+		t.Fatal(err)
+	}
+	if err := runtime.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-workDone:
+	default:
+		t.Fatal("Runtime returned before queued work completed")
+	}
+}
+
+func TestRuntimeRunsPipelineAndListenerUntilParentCancellation(t *testing.T) {
+	listener := newFakeListener(func(ctx context.Context) error { <-ctx.Done(); return nil })
+	pipeline := newFakePipeline()
+	pipeline.run = func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }
+	runtime, err := NewRuntime(listener, pipeline)
+	if err != nil {
+		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	result := make(chan error, 1)
-	go func() { result <- runtime.Run(ctx) }()
-	select {
-	case <-listener.started:
-	case <-time.After(time.Second):
-		t.Fatal("listener.Run() was not called")
-	}
-	select {
-	case <-handlerStarted:
-	case <-time.After(time.Second):
-		t.Fatal("runtime handler was not called")
-	}
+	done := make(chan error, 1)
+	go func() { done <- runtime.Run(ctx) }()
+	<-listener.started
+	<-pipeline.started
 	cancel()
 	select {
-	case err := <-result:
+	case err := <-done:
 		if err != nil {
-			t.Fatalf("Runtime.Run() error after cancellation: %v", err)
+			t.Fatalf("Run() = %v", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("Runtime.Run() did not stop after cancellation")
+		t.Fatal("Run() stuck")
 	}
 }
 
-func TestRuntimeReturnsListenerError(t *testing.T) {
-	wantErr := errors.New("listener failed")
-	listener := newFakeListener(func(context.Context) error { return wantErr })
-	runtime, err := NewRuntime(listener, func(context.Context, vad.Event) error { return nil })
+func TestRuntimePipelineErrorCancelsListenerAndJoinsCleanupError(t *testing.T) {
+	pipelineErr, listenerErr := errors.New("pipeline failed"), errors.New("listener cleanup failed")
+	listener := newFakeListener(func(ctx context.Context) error { <-ctx.Done(); return listenerErr })
+	pipeline := newFakePipeline()
+	pipeline.run = func(context.Context) error { return pipelineErr }
+	runtime, err := NewRuntime(listener, pipeline)
 	if err != nil {
-		t.Fatalf("NewRuntime() error: %v", err)
+		t.Fatal(err)
 	}
-	if err := runtime.Run(context.Background()); !errors.Is(err, wantErr) {
-		t.Fatalf("Runtime.Run() error = %v, want wrapped listener error", err)
+	err = runtime.Run(context.Background())
+	if !errors.Is(err, pipelineErr) || !errors.Is(err, listenerErr) {
+		t.Fatalf("Run()=%v", err)
 	}
 }
 
-func TestRuntimeHandlerErrorCancelsListenerAndJoinsListenerError(t *testing.T) {
-	handlerErr := errors.New("handler failed")
-	listenerErr := errors.New("listener shutdown failed")
-	listener := newFakeListener(func(ctx context.Context) error {
-		<-ctx.Done()
-		return listenerErr
-	}, vad.SpeechStarted{})
-	runtime, err := NewRuntime(listener, func(context.Context, vad.Event) error { return handlerErr })
+func TestRuntimeListenerErrorCancelsPipeline(t *testing.T) {
+	listenerErr := errors.New("listener failed")
+	listener := newFakeListener(func(context.Context) error { return listenerErr })
+	pipeline := newFakePipeline()
+	pipeline.run = func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }
+	runtime, err := NewRuntime(listener, pipeline)
 	if err != nil {
-		t.Fatalf("NewRuntime() error: %v", err)
+		t.Fatal(err)
 	}
-	if err := runtime.Run(context.Background()); !errors.Is(err, handlerErr) || !errors.Is(err, listenerErr) {
-		t.Fatalf("Runtime.Run() error = %v, want both handler and listener errors", err)
+	if err := runtime.Run(context.Background()); !errors.Is(err, listenerErr) {
+		t.Fatalf("Run()=%v", err)
+	}
+}
+
+func TestRuntimeHandleErrorCancelsAndJoinsIndependentErrors(t *testing.T) {
+	handleErr, pipelineErr, listenerErr := errors.New("handle failed"), errors.New("pipeline shutdown"), errors.New("listener shutdown")
+	listener := newFakeListener(func(ctx context.Context) error { <-ctx.Done(); return listenerErr }, vad.SpeechStarted{})
+	pipeline := newFakePipeline()
+	pipeline.handle = func(context.Context, vad.Event) error { return handleErr }
+	pipeline.run = func(ctx context.Context) error { <-ctx.Done(); return pipelineErr }
+	runtime, err := NewRuntime(listener, pipeline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = runtime.Run(context.Background())
+	for _, want := range []error{handleErr, pipelineErr, listenerErr} {
+		if !errors.Is(err, want) {
+			t.Fatalf("Run()=%v missing %v", err, want)
+		}
 	}
 }
 
 func TestNewRuntimeRejectsNilDependencies(t *testing.T) {
-	if _, err := NewRuntime(nil, func(context.Context, vad.Event) error { return nil }); err == nil {
-		t.Fatal("NewRuntime(nil, handler) succeeded")
-	}
 	listener := newFakeListener(func(context.Context) error { return nil })
+	if _, err := NewRuntime(nil, newFakePipeline()); err == nil {
+		t.Fatal("nil listener accepted")
+	}
 	if _, err := NewRuntime(listener, nil); err == nil {
-		t.Fatal("NewRuntime(listener, nil) succeeded")
+		t.Fatal("nil pipeline accepted")
 	}
 	var nilListener *fakeListener
-	if _, err := NewRuntime(nilListener, func(context.Context, vad.Event) error { return nil }); err == nil {
-		t.Fatal("NewRuntime(typed nil listener, handler) succeeded")
+	if _, err := NewRuntime(nilListener, newFakePipeline()); err == nil {
+		t.Fatal("typed nil listener accepted")
+	}
+	var nilPipeline *fakePipeline
+	if _, err := NewRuntime(listener, nilPipeline); err == nil {
+		t.Fatal("typed nil pipeline accepted")
 	}
 }

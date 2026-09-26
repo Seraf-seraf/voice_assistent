@@ -48,14 +48,19 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("создать VAD: %w", err)
 	}
-	if _, err := newSTTClient(cfg.STT); err != nil {
+	sttClient, err := newSTTClient(cfg.STT)
+	if err != nil {
 		return closeStartupDetector(log, components, fmt.Errorf("создать STT client: %w", err))
+	}
+	transcriber, err := newTranscriber(sttClient, log)
+	if err != nil {
+		return closeStartupDetector(log, components, fmt.Errorf("создать transcriber: %w", err))
 	}
 	audioInput, err := newAudioInputComponents(format, cfg.Audio, components)
 	if err != nil {
 		return closeStartupDetector(log, components, fmt.Errorf("создать audio input: %w", err))
 	}
-	runtime, err := newAssistantRuntime(audioInput.listener, log)
+	runtime, err := newAssistantRuntime(audioInput.listener, transcriber)
 	if err != nil {
 		return closeStartupAudioInput(log, audioInput, components, fmt.Errorf("создать runtime: %w", err))
 	}
