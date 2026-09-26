@@ -15,6 +15,60 @@ func TestNewVADComponents(t *testing.T) {
 	}
 }
 
+func TestNewSTTClient(t *testing.T) {
+	if _, err := newSTTClient(config.Default().STT); err != nil {
+		t.Fatalf("newSTTClient() error: %v", err)
+	}
+}
+
+func TestNewSTTClientRejectsInvalidOptions(t *testing.T) {
+	tests := []struct {
+		name   string
+		modify func(*config.STTConfig)
+	}{
+		{
+			name: "URL without http or https",
+			modify: func(cfg *config.STTConfig) {
+				cfg.URL = "ftp://example.com/transcribe"
+			},
+		},
+		{
+			name: "URL without host",
+			modify: func(cfg *config.STTConfig) {
+				cfg.URL = "http:///transcribe"
+			},
+		},
+		{
+			name: "URL with credentials",
+			modify: func(cfg *config.STTConfig) {
+				cfg.URL = "http://user:secret@example.com/transcribe"
+			},
+		},
+		{
+			name: "non-positive timeout",
+			modify: func(cfg *config.STTConfig) {
+				cfg.Timeout = 0
+			},
+		},
+		{
+			name: "non-positive response limit",
+			modify: func(cfg *config.STTConfig) {
+				cfg.MaxResponseBytes = 0
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := config.Default().STT
+			test.modify(&cfg)
+			if _, err := newSTTClient(cfg); err == nil {
+				t.Fatal("newSTTClient() succeeded, want HTTP client error")
+			}
+		})
+	}
+}
+
 func TestNewVADComponentsRejectsWebRTCDetectorSettings(t *testing.T) {
 	tests := []struct {
 		name   string

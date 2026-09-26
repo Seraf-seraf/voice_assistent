@@ -6,6 +6,7 @@ import (
 
 	"github.com/Seraf-seraf/voice_assistent/internal/audio"
 	"github.com/Seraf-seraf/voice_assistent/internal/config"
+	"github.com/Seraf-seraf/voice_assistent/internal/stt"
 	"github.com/Seraf-seraf/voice_assistent/internal/vad"
 )
 
@@ -44,4 +45,17 @@ func newVADComponents(
 	}
 
 	return vadComponents{detector: detector, segmenter: segmenter}, nil
+}
+
+func newSTTClient(cfg config.STTConfig) (stt.Client, error) {
+	client, err := stt.NewHTTPClient(stt.HTTPOptions{
+		Endpoint:         cfg.URL,
+		Timeout:          cfg.Timeout.Std(),
+		MaxResponseBytes: cfg.MaxResponseBytes,
+		APIKey:           cfg.APIKey,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("создать STT HTTP client: %w", err)
+	}
+	return client, nil
 }

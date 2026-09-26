@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -313,9 +312,6 @@ func (cfg Config) Validate() error {
 	if cfg.Audio.BufferFrames < 2 {
 		return errors.New("audio.buffer_frames: значение должно быть не меньше 2")
 	}
-	if err := validateServiceURL(cfg.STT.URL); err != nil {
-		return fmt.Errorf("stt.url: %w", err)
-	}
 	if cfg.LLM.Temperature < 0 || cfg.LLM.Temperature > 2 {
 		return errors.New("llm.temperature: значение должно быть от 0 до 2")
 	}
@@ -343,39 +339,6 @@ func (cfg Config) Validate() error {
 	}
 	if strings.TrimSpace(cfg.Control.PTTKey) == "" {
 		return errors.New("control.ptt_key: значение обязательно")
-	}
-	return validateLimits(cfg)
-}
-
-func validateLimits(cfg Config) error {
-	durations := map[string]Duration{"stt.timeout": cfg.STT.Timeout}
-	for name, value := range durations {
-		if value <= 0 {
-			return fmt.Errorf("%s: значение должно быть положительным", name)
-		}
-	}
-	limits := map[string]int64{"stt.max_response_bytes": cfg.STT.MaxResponseBytes}
-	for name, value := range limits {
-		if value <= 0 {
-			return fmt.Errorf("%s: значение должно быть положительным", name)
-		}
-	}
-	return nil
-}
-
-func validateServiceURL(raw string) error {
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("некорректный URL: %w", err)
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return errors.New("разрешены только схемы http и https")
-	}
-	if parsed.Host == "" {
-		return errors.New("host обязателен")
-	}
-	if parsed.User != nil {
-		return errors.New("credentials внутри URL запрещены")
 	}
 	return nil
 }

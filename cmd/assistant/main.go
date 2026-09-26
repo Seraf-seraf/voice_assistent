@@ -43,5 +43,8 @@ func run() error {
 			log.Error("Закрыть VAD detector", "ошибка", err)
 		}
 	}()
+	if _, err := newSTTClient(cfg.STT); err != nil {
+		return fmt.Errorf("создать STT client: %w", err)
+	}
 	return nil
 }

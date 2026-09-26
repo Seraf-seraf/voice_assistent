@@ -69,17 +69,6 @@ func TestLoadRejectsUnknownField(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsCredentialsInURL(t *testing.T) {
-	cfg := Default()
-	cfg.LLM.Model = "test"
-	cfg.STT.URL = "http://user:secret@127.0.0.1/inference"
-
-	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "credentials") {
-		t.Fatalf("Validate() error = %v, want credentials error", err)
-	}
-}
-
 func TestValidateRejectsInvalidTranscriptPattern(t *testing.T) {
 	cfg := Default()
 	cfg.LLM.Model = "test"
