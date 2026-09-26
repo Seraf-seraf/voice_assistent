@@ -1,8 +1,8 @@
 # Voice Assistant
 
-Локальный голосовой ассистент на Go. Composition root собирает audio input,
-VAD, listener и STT-клиент. Аудиотракт пока не запускается: микрофон не
-открывается, события не обрабатываются. Dialogue/control остаются каркасом.
+Локальный голосовой ассистент на Go. Приложение запускает microphone/VAD runtime
+и обрабатывает события `SpeechStarted`/`SpeechEnded`. STT-клиент создаётся, но
+транскрипция ещё не подключена. Dialogue/control остаются каркасом.
 
 ## Требования
 
@@ -36,6 +36,6 @@ make up            # запуск Docker-сервисов
 make down          # остановка Docker-сервисов
 ```
 
-Composition root создаёт audio input, VAD, listener и STT-клиент, но не вызывает
-runtime аудиотракта. Поэтому приложение пока не слушает микрофон и не отправляет
-аудио в STT.
+Приложение запускает microphone/VAD runtime и обрабатывает
+`SpeechStarted`/`SpeechEnded`. STT-клиент создан, но транскрипция ещё не
+подключена: аудио не отправляется в STT.

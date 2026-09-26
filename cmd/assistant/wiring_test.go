@@ -1,6 +1,8 @@
 package main
 
 import (
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -13,6 +15,13 @@ func TestNewAudioFormat(t *testing.T) {
 	want := audio.Format{SampleRate: 16000, Channels: 1, FrameDuration: 20 * time.Millisecond}
 	if format != want {
 		t.Fatalf("newAudioFormat() = %+v, want %+v", format, want)
+	}
+}
+
+func TestNewAssistantRuntimeRequiresListener(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if _, err := newAssistantRuntime(nil, log); err == nil {
+		t.Fatal("newAssistantRuntime(nil, log) succeeded")
 	}
 }
 

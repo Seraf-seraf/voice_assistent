@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
+	"github.com/Seraf-seraf/voice_assistent/internal/assistant"
 	"github.com/Seraf-seraf/voice_assistent/internal/audio"
 	"github.com/Seraf-seraf/voice_assistent/internal/audio/input"
 	"github.com/Seraf-seraf/voice_assistent/internal/audio/listener"
@@ -98,4 +101,20 @@ func newSTTClient(cfg config.STTConfig) (stt.Client, error) {
 		return nil, fmt.Errorf("создать STT HTTP client: %w", err)
 	}
 	return client, nil
+}
+
+func newAssistantRuntime(audioListener *listener.Listener, log *slog.Logger) (*assistant.Runtime, error) {
+	return assistant.NewRuntime(audioListener, func(_ context.Context, event vad.Event) error {
+		switch speechEvent := event.(type) {
+		case vad.SpeechStarted:
+			log.Debug("Началась речь", "at", speechEvent.At)
+		case vad.SpeechEnded:
+			log.Debug(
+				"Речь завершена",
+				"utterance_id", speechEvent.Utterance.ID,
+				"duration", speechEvent.Utterance.Duration(),
+			)
+		}
+		return nil
+	})
 }

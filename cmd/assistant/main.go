@@ -1,22 +1,31 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
+	"os/signal"
 
 	"github.com/Seraf-seraf/voice_assistent/internal/config"
 	"github.com/Seraf-seraf/voice_assistent/internal/logger"
 )
 
 func main() {
-	if err := run(); err != nil {
+	err := func() error {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer stop()
+		return run(ctx)
+	}()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Ошибка запуска: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
+func run(ctx context.Context) error {
 	configPath := flag.String("config", "", "путь к YAML-конфигурации")
 	flag.Parse()
 
@@ -39,22 +48,32 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("создать VAD: %w", err)
 	}
-	defer func() {
-		if err := components.detector.Close(); err != nil {
-			log.Error("Закрыть VAD detector", "ошибка", err)
-		}
-	}()
+	if _, err := newSTTClient(cfg.STT); err != nil {
+		return closeStartupDetector(log, components, fmt.Errorf("создать STT client: %w", err))
+	}
 	audioInput, err := newAudioInputComponents(format, cfg.Audio, components)
 	if err != nil {
-		return fmt.Errorf("создать audio input: %w", err)
+		return closeStartupDetector(log, components, fmt.Errorf("создать audio input: %w", err))
 	}
-	defer func() {
-		if err := audioInput.source.Close(); err != nil {
-			log.Error("Закрыть audio source", "ошибка", err)
-		}
-	}()
-	if _, err := newSTTClient(cfg.STT); err != nil {
-		return fmt.Errorf("создать STT client: %w", err)
+	runtime, err := newAssistantRuntime(audioInput.listener, log)
+	if err != nil {
+		return closeStartupAudioInput(log, audioInput, components, fmt.Errorf("создать runtime: %w", err))
 	}
-	return nil
+	return runtime.Run(ctx)
+}
+
+func closeStartupDetector(log *slog.Logger, components vadComponents, cause error) error {
+	if err := components.detector.Close(); err != nil {
+		log.Error("Закрыть VAD detector", "ошибка", err)
+		return errors.Join(cause, fmt.Errorf("закрыть VAD detector: %w", err))
+	}
+	return cause
+}
+
+func closeStartupAudioInput(log *slog.Logger, audioInput audioInputComponents, components vadComponents, cause error) error {
+	if err := audioInput.source.Close(); err != nil {
+		log.Error("Закрыть audio source", "ошибка", err)
+		cause = errors.Join(cause, fmt.Errorf("закрыть audio source: %w", err))
+	}
+	return closeStartupDetector(log, components, cause)
 }
