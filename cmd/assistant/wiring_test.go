@@ -4,13 +4,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Seraf-seraf/voice_assistent/internal/audio"
 	"github.com/Seraf-seraf/voice_assistent/internal/config"
 )
 
+func TestNewAudioFormat(t *testing.T) {
+	format := newAudioFormat(config.AudioConfig{SampleRate: 16000, Channels: 1, FrameMS: 20})
+	want := audio.Format{SampleRate: 16000, Channels: 1, FrameDuration: 20 * time.Millisecond}
+	if format != want {
+		t.Fatalf("newAudioFormat() = %+v, want %+v", format, want)
+	}
+}
+
 func TestNewVADComponents(t *testing.T) {
-	audioCfg := config.Default().Audio
+	format := newAudioFormat(config.Default().Audio)
 	vadCfg := config.Default().VAD
-	if _, err := newVADComponents(audioCfg, vadCfg); err != nil {
+	if _, err := newVADComponents(format, vadCfg); err != nil {
 		t.Fatalf("newVADComponents() error: %v", err)
 	}
 }
@@ -105,7 +114,8 @@ func TestNewVADComponentsRejectsWebRTCDetectorSettings(t *testing.T) {
 			audioCfg := config.Default().Audio
 			vadCfg := config.Default().VAD
 			test.modify(&audioCfg, &vadCfg)
-			if _, err := newVADComponents(audioCfg, vadCfg); err == nil {
+			format := newAudioFormat(audioCfg)
+			if _, err := newVADComponents(format, vadCfg); err == nil {
 				t.Fatal("newVADComponents() succeeded, want detector error")
 			}
 		})
@@ -133,10 +143,10 @@ func TestNewVADComponentsRejectsSegmenterSettings(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			audioCfg := config.Default().Audio
+			format := newAudioFormat(config.Default().Audio)
 			vadCfg := config.Default().VAD
 			test.modify(&vadCfg)
-			if _, err := newVADComponents(audioCfg, vadCfg); err == nil {
+			if _, err := newVADComponents(format, vadCfg); err == nil {
 				t.Fatal("newVADComponents() succeeded, want segmenter error")
 			}
 		})

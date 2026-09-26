@@ -1,10 +1,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/Seraf-seraf/voice_assistent/internal/audio"
+	"github.com/Seraf-seraf/voice_assistent/internal/audio/input"
+	"github.com/Seraf-seraf/voice_assistent/internal/audio/listener"
 	"github.com/Seraf-seraf/voice_assistent/internal/config"
 	"github.com/Seraf-seraf/voice_assistent/internal/stt"
 	"github.com/Seraf-seraf/voice_assistent/internal/vad"
@@ -15,16 +18,22 @@ type vadComponents struct {
 	segmenter *vad.Segmenter
 }
 
-func newVADComponents(
-	audioCfg config.AudioConfig,
-	vadCfg config.VADConfig,
-) (vadComponents, error) {
-	format := audio.Format{
-		SampleRate:    audioCfg.SampleRate,
-		Channels:      audioCfg.Channels,
-		FrameDuration: time.Duration(audioCfg.FrameMS) * time.Millisecond,
-	}
+const speechEventQueueSize = 2
 
+type audioInputComponents struct {
+	source   input.Source
+	listener *listener.Listener
+}
+
+func newAudioFormat(cfg config.AudioConfig) audio.Format {
+	return audio.Format{
+		SampleRate:    cfg.SampleRate,
+		Channels:      cfg.Channels,
+		FrameDuration: time.Duration(cfg.FrameMS) * time.Millisecond,
+	}
+}
+
+func newVADComponents(format audio.Format, vadCfg config.VADConfig) (vadComponents, error) {
 	detector, err := vad.NewWebRTCDetector(format, vadCfg.Aggressiveness)
 	if err != nil {
 		return vadComponents{}, fmt.Errorf("создать WebRTC detector: %w", err)
@@ -39,12 +48,43 @@ func newVADComponents(
 	})
 	if err != nil {
 		if closeErr := detector.Close(); closeErr != nil {
-			return vadComponents{}, fmt.Errorf("создать segmenter: %w (закрыть WebRTC detector: %v)", err, closeErr)
+			return vadComponents{}, errors.Join(
+				fmt.Errorf("создать segmenter: %w", err),
+				fmt.Errorf("закрыть WebRTC detector: %w", closeErr),
+			)
 		}
 		return vadComponents{}, fmt.Errorf("создать segmenter: %w", err)
 	}
 
 	return vadComponents{detector: detector, segmenter: segmenter}, nil
+}
+
+func newAudioInputComponents(
+	format audio.Format,
+	cfg config.AudioConfig,
+	vadComponents vadComponents,
+) (audioInputComponents, error) {
+	source, err := input.NewMalgoSource(input.MalgoOptions{
+		Format:        format,
+		QueueSize:     cfg.BufferFrames,
+		CaptureDevice: cfg.InputDevice,
+	})
+	if err != nil {
+		return audioInputComponents{}, fmt.Errorf("создать audio source: %w", err)
+	}
+
+	audioListener, err := listener.New(source, vadComponents.detector, vadComponents.segmenter, speechEventQueueSize)
+	if err != nil {
+		if closeErr := source.Close(); closeErr != nil {
+			return audioInputComponents{}, errors.Join(
+				fmt.Errorf("создать listener: %w", err),
+				fmt.Errorf("закрыть audio source: %w", closeErr),
+			)
+		}
+		return audioInputComponents{}, fmt.Errorf("создать listener: %w", err)
+	}
+
+	return audioInputComponents{source: source, listener: audioListener}, nil
 }
 
 func newSTTClient(cfg config.STTConfig) (stt.Client, error) {
