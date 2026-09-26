@@ -69,28 +69,6 @@ func TestLoadRejectsUnknownField(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsInvalidTranscriptPattern(t *testing.T) {
-	cfg := Default()
-	cfg.LLM.Model = "test"
-	cfg.Transcript.IgnoredPatterns = []string{"["}
-
-	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "ignored_patterns") {
-		t.Fatalf("Validate() error = %v, want regexp error", err)
-	}
-}
-
-func TestValidateRequiresHistoryForCompleteTurn(t *testing.T) {
-	cfg := Default()
-	cfg.LLM.Model = "test"
-	cfg.Dialogue.MaxHistoryMessages = 1
-
-	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "max_history_messages") {
-		t.Fatalf("Validate() error = %v, want history limit error", err)
-	}
-}
-
 func TestLoadAllowsUnconfiguredModel(t *testing.T) {
 	t.Setenv("ASSISTANT_LLM_MODEL", "")
 	cfg, err := Load("")

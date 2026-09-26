@@ -12,7 +12,10 @@ import (
 	"github.com/Seraf-seraf/voice_assistent/internal/audio/input"
 	"github.com/Seraf-seraf/voice_assistent/internal/audio/listener"
 	"github.com/Seraf-seraf/voice_assistent/internal/config"
+	"github.com/Seraf-seraf/voice_assistent/internal/control/router"
+	"github.com/Seraf-seraf/voice_assistent/internal/dialogue"
 	"github.com/Seraf-seraf/voice_assistent/internal/stt"
+	"github.com/Seraf-seraf/voice_assistent/internal/transcript"
 	"github.com/Seraf-seraf/voice_assistent/internal/vad"
 )
 
@@ -106,10 +109,50 @@ func newSTTClient(cfg config.STTConfig) (stt.Client, error) {
 	return client, nil
 }
 
-func newTranscriber(client stt.Client, log *slog.Logger) (*assistant.Transcriber, error) {
-	return assistant.NewTranscriber(client, func(_ context.Context, result assistant.Transcription) error {
-		log.Debug("Речь распознана", "utterance_id", result.UtteranceID, "stt_duration", result.Duration)
+func newTranscriptNormalizer(cfg config.TranscriptConfig) (*transcript.Normalizer, error) {
+	return transcript.NewNormalizer(transcript.Options{
+		MinSignificantRunes: cfg.MinSignificantRunes,
+		IgnoredExact:        cfg.IgnoredExact,
+		IgnoredPatterns:     cfg.IgnoredPatterns,
+	})
+}
+
+func newControlRouter(appCfg config.AppConfig, wakeCfg config.WakeConfig) (*router.Router, error) {
+	mode, err := router.ParseMode(appCfg.Mode)
+	if err != nil {
+		return nil, err
+	}
+	return router.New(router.Options{
+		Mode:        mode,
+		WakePhrases: wakeCfg.Phrases,
+		WakeWindow:  wakeCfg.ActivationWindow.Std(),
+	})
+}
+
+func newDialogueManager(appCfg config.AppConfig, dialogueCfg config.DialogueConfig) (*dialogue.Manager, error) {
+	return dialogue.New(dialogue.Options{
+		SystemPrompt:       appCfg.SystemPrompt,
+		ResponsePolicy:     appCfg.ResponsePolicy,
+		MaxHistoryMessages: dialogueCfg.MaxHistoryMessages,
+	})
+}
+
+func newInputProcessor(
+	normalizer *transcript.Normalizer,
+	controlRouter *router.Router,
+	manager *dialogue.Manager,
+	log *slog.Logger,
+) (*assistant.InputProcessor, error) {
+	return assistant.NewInputProcessor(normalizer, controlRouter, manager, func(_ context.Context, query assistant.Query) error {
+		log.Debug("Получен запрос", "utterance_id", query.UtteranceID)
 		return nil
+	}, time.Now)
+}
+
+func newTranscriber(client stt.Client, log *slog.Logger, processor *assistant.InputProcessor) (*assistant.Transcriber, error) {
+	return assistant.NewTranscriber(client, func(ctx context.Context, result assistant.Transcription) error {
+		log.Debug("Речь распознана", "utterance_id", result.UtteranceID, "stt_duration", result.Duration)
+		return processor.Handle(ctx, result)
 	}, transcriptionQueueSize)
 }
 

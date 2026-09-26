@@ -1,9 +1,9 @@
 # Voice Assistant
 
 Локальный голосовой ассистент на Go. Приложение получает звук с microphone,
-сегментирует речь через VAD и отправляет завершённые utterance в STT/Whisper.
-Результат пока остаётся raw transcription. Normalization, router и dialogue
-ещё не подключены.
+сегментирует речь через VAD, распознаёт её в STT/Whisper, нормализует текст и
+передаёт его в router. Команда очистки истории подключена; обычный запрос
+доходит до query boundary без генератора ответа.
 
 ## Требования
 
@@ -37,5 +37,6 @@ make up            # запуск Docker-сервисов
 make down          # остановка Docker-сервисов
 ```
 
-Тракт обработки: microphone → VAD → utterance → STT/Whisper → raw
-transcription. Normalization/router/dialogue ещё не подключены.
+Тракт обработки: microphone → VAD → STT/Whisper → normalization → router →
+query boundary. Reset history подключён. Dialogue turn пока не начинается,
+генератора ответа нет. Режим PTT не включает global hotkey в runtime.

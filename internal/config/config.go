@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -297,12 +296,6 @@ func splitNonEmpty(raw string) []string {
 }
 
 func (cfg Config) Validate() error {
-	if cfg.App.Mode != ModeAlways && cfg.App.Mode != ModePTT && cfg.App.Mode != ModeWake {
-		return fmt.Errorf("app.mode: неизвестный режим %q", cfg.App.Mode)
-	}
-	if strings.TrimSpace(cfg.App.SystemPrompt) == "" {
-		return errors.New("app.system_prompt: значение обязательно")
-	}
 	if cfg.Audio.BufferFrames < 2 {
 		return errors.New("audio.buffer_frames: значение должно быть не меньше 2")
 	}
@@ -311,25 +304,6 @@ func (cfg Config) Validate() error {
 	}
 	if cfg.LLM.MaxTokens <= 0 {
 		return errors.New("llm.max_tokens должен быть положительным")
-	}
-	if cfg.Dialogue.MaxHistoryMessages < 2 {
-		return errors.New("dialogue.max_history_messages должен быть не меньше 2")
-	}
-	if cfg.Transcript.MinSignificantRunes <= 0 {
-		return errors.New("transcript.min_significant_runes должен быть положительным")
-	}
-	for _, phrase := range cfg.Transcript.IgnoredExact {
-		if strings.TrimSpace(phrase) == "" {
-			return errors.New("transcript.ignored_exact не может содержать пустые фразы")
-		}
-	}
-	for _, pattern := range cfg.Transcript.IgnoredPatterns {
-		if _, err := regexp.Compile(pattern); err != nil {
-			return fmt.Errorf("transcript.ignored_patterns: некорректный regexp %q: %w", pattern, err)
-		}
-	}
-	if len(cfg.Wake.Phrases) == 0 || cfg.Wake.ActivationWindow <= 0 {
-		return errors.New("wake: нужна хотя бы одна фраза и положительное activation_window")
 	}
 	if strings.TrimSpace(cfg.Control.PTTKey) == "" {
 		return errors.New("control.ptt_key: значение обязательно")

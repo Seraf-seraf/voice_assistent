@@ -43,18 +43,35 @@ func run(ctx context.Context) error {
 	}
 
 	log.Info("Конфигурация загружена", "режим", cfg.App.Mode)
+	normalizer, err := newTranscriptNormalizer(cfg.Transcript)
+	if err != nil {
+		return fmt.Errorf("создать transcript normalizer: %w", err)
+	}
+	controlRouter, err := newControlRouter(cfg.App, cfg.Wake)
+	if err != nil {
+		return fmt.Errorf("создать control router: %w", err)
+	}
+	manager, err := newDialogueManager(cfg.App, cfg.Dialogue)
+	if err != nil {
+		return fmt.Errorf("создать dialogue manager: %w", err)
+	}
+	processor, err := newInputProcessor(normalizer, controlRouter, manager, log)
+	if err != nil {
+		return fmt.Errorf("создать input processor: %w", err)
+	}
+	sttClient, err := newSTTClient(cfg.STT)
+	if err != nil {
+		return fmt.Errorf("создать STT client: %w", err)
+	}
+	transcriber, err := newTranscriber(sttClient, log, processor)
+	if err != nil {
+		return fmt.Errorf("создать transcriber: %w", err)
+	}
+
 	format := newAudioFormat(cfg.Audio)
 	components, err := newVADComponents(format, cfg.VAD)
 	if err != nil {
 		return fmt.Errorf("создать VAD: %w", err)
-	}
-	sttClient, err := newSTTClient(cfg.STT)
-	if err != nil {
-		return closeStartupDetector(log, components, fmt.Errorf("создать STT client: %w", err))
-	}
-	transcriber, err := newTranscriber(sttClient, log)
-	if err != nil {
-		return closeStartupDetector(log, components, fmt.Errorf("создать transcriber: %w", err))
 	}
 	audioInput, err := newAudioInputComponents(format, cfg.Audio, components)
 	if err != nil {

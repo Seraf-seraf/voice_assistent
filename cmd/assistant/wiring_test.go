@@ -1,13 +1,17 @@
 package main
 
 import (
-	"io"
+	"bytes"
+	"context"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Seraf-seraf/voice_assistent/internal/audio"
 	"github.com/Seraf-seraf/voice_assistent/internal/config"
+	"github.com/Seraf-seraf/voice_assistent/internal/stt"
+	"github.com/Seraf-seraf/voice_assistent/internal/vad"
 )
 
 func TestNewAudioFormat(t *testing.T) {
@@ -18,18 +22,113 @@ func TestNewAudioFormat(t *testing.T) {
 	}
 }
 
-func TestNewTranscriberAndAssistantRuntimeRequireDependencies(t *testing.T) {
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	client, err := newSTTClient(config.Default().STT)
+func TestCompositionFactoriesOwnTheirValidation(t *testing.T) {
+	transcriptCfg := config.Default().Transcript
+	if _, err := newTranscriptNormalizer(transcriptCfg); err != nil {
+		t.Fatal(err)
+	}
+	transcriptCfg.MinSignificantRunes = 0
+	if _, err := newTranscriptNormalizer(transcriptCfg); err == nil {
+		t.Fatal("normalizer accepted invalid minimum")
+	}
+	transcriptCfg = config.Default().Transcript
+	transcriptCfg.IgnoredExact = []string{"  "}
+	if _, err := newTranscriptNormalizer(transcriptCfg); err == nil {
+		t.Fatal("normalizer accepted empty ignored exact")
+	}
+	transcriptCfg = config.Default().Transcript
+	transcriptCfg.IgnoredPatterns = []string{"["}
+	if _, err := newTranscriptNormalizer(transcriptCfg); err == nil {
+		t.Fatal("normalizer accepted invalid pattern")
+	}
+
+	appCfg, wakeCfg := config.Default().App, config.Default().Wake
+	if _, err := newControlRouter(config.AppConfig{Mode: "mystery"}, wakeCfg); err == nil {
+		t.Fatal("router accepted unknown mode")
+	}
+	wakeApp := appCfg
+	wakeApp.Mode = config.ModeWake
+	if _, err := newControlRouter(wakeApp, config.WakeConfig{ActivationWindow: config.Duration(time.Second)}); err == nil {
+		t.Fatal("wake router accepted no phrases")
+	}
+	if _, err := newControlRouter(wakeApp, config.WakeConfig{Phrases: []string{"ассистент"}}); err == nil {
+		t.Fatal("wake router accepted zero window")
+	}
+	for _, mode := range []string{config.ModeAlways, config.ModePTT} {
+		if _, err := newControlRouter(config.AppConfig{Mode: mode}, config.WakeConfig{}); err != nil {
+			t.Errorf("%s router rejected empty wake config: %v", mode, err)
+		}
+	}
+
+	if _, err := newDialogueManager(config.Default().App, config.Default().Dialogue); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name     string
+		app      config.AppConfig
+		dialogue config.DialogueConfig
+	}{
+		{name: "empty system prompt", app: config.AppConfig{ResponsePolicy: "policy"}, dialogue: config.Default().Dialogue},
+		{name: "empty response policy", app: config.AppConfig{SystemPrompt: "prompt"}, dialogue: config.Default().Dialogue},
+		{name: "short history", app: config.Default().App, dialogue: config.DialogueConfig{MaxHistoryMessages: 1}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := newDialogueManager(test.app, test.dialogue); err == nil {
+				t.Fatal("dialogue manager accepted invalid options")
+			}
+		})
+	}
+}
+
+type wiringSTTClient struct {
+	result stt.Transcript
+}
+
+func (c wiringSTTClient) Transcribe(context.Context, audio.Utterance) (stt.Transcript, error) {
+	return c.result, nil
+}
+
+func TestTranscriberForwardsQueryAndLogsOnlyMetadata(t *testing.T) {
+	var output bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	cfg := config.Default()
+	normalizer, err := newTranscriptNormalizer(cfg.Transcript)
 	if err != nil {
 		t.Fatal(err)
 	}
-	transcriber, err := newTranscriber(client, log)
+	controlRouter, err := newControlRouter(cfg.App, cfg.Wake)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := newAssistantRuntime(nil, transcriber); err == nil {
-		t.Fatal("newAssistantRuntime(nil, transcriber) succeeded")
+	manager, err := newDialogueManager(cfg.App, cfg.Dialogue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	processor, err := newInputProcessor(normalizer, controlRouter, manager, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := wiringSTTClient{result: stt.Transcript{Text: "секретная пользовательская фраза", Duration: 125 * time.Millisecond}}
+	transcriber, err := newTranscriber(client, log, processor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := transcriber.Handle(context.Background(), vad.SpeechEnded{Utterance: audio.Utterance{ID: 77}}); err != nil {
+		t.Fatal(err)
+	}
+	transcriber.CloseInput()
+	if err := transcriber.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	logged := output.String()
+	if strings.Contains(logged, "секретная пользовательская фраза") {
+		t.Fatalf("user text leaked into log: %s", logged)
+	}
+	if !strings.Contains(logged, "utterance_id=77") || !strings.Contains(logged, "stt_duration=125ms") {
+		t.Fatalf("safe metadata missing from log: %s", logged)
+	}
+	if len(manager.Snapshot().Messages) != 0 {
+		t.Fatal("input processing started a dialogue turn")
 	}
 }
 
