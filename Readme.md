@@ -40,3 +40,13 @@ make down          # остановка Docker-сервисов
 Тракт обработки: microphone → VAD → STT/Whisper → normalization → router →
 query boundary. Reset history подключён. Dialogue turn пока не начинается,
 генератора ответа нет. Режим PTT не включает global hotkey в runtime.
+
+## LLM port
+
+Добавлены нейтральный интерфейс `llm.Generator` и прикладной `Responder`,
+который управляет dialogue turn и собирает полный текстовый ответ. Их поведение
+проверяется с тестовым fake, но production consumer пока не подключён. Модели и
+адаптера генерации нет, поэтому приложение пока не генерирует ответ.
+
+Сборка текста в `Responder` не является streaming-выводом и не воспроизводит
+речь.

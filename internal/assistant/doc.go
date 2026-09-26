@@ -2,5 +2,8 @@
 //
 // Transcriber последовательно распознаёт завершённые utterance вне event loop.
 // InputProcessor нормализует raw transcription и маршрутизирует команды и
-// запросы; начало dialogue turn остаётся ответственностью будущего LLM consumer.
+// запросы. Responder — единственная lifecycle-граница создания и завершения
+// ответа через llm.Generator: он начинает turn, передаёт snapshot генератору,
+// доставляет целый ответ и завершает либо освобождает turn. Production consumer
+// пока не подключён.
 package assistant

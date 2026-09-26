@@ -3,11 +3,13 @@ package assistant
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/Seraf-seraf/voice_assistent/internal/control/router"
 	"github.com/Seraf-seraf/voice_assistent/internal/dialogue"
+	"github.com/Seraf-seraf/voice_assistent/internal/llm"
 	"github.com/Seraf-seraf/voice_assistent/internal/transcript"
 )
 
@@ -194,6 +196,119 @@ func TestInputProcessorPauseAndResumeUseRouterState(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("query calls after resume = %d, want 1", calls)
+	}
+}
+
+func TestInputProcessorWithResponderCompletesSequentialDialogueTurns(t *testing.T) {
+	normalizer, controlRouter, manager := inputProcessorDependencies(t, router.ModeAlways, 0)
+	var requests []llm.Request
+	generator := fakeGenerator{generate: func(_ context.Context, request llm.Request, emit llm.Emit) error {
+		requests = append(requests, request)
+		return emit(llm.TextDelta{Text: "ответ"})
+	}}
+	responder, err := NewResponder(manager, generator, llm.Options{Temperature: 0.4, MaxTokens: 20}, func(context.Context, Response) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	processor, err := NewInputProcessor(normalizer, controlRouter, manager, responder.Handle, func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, text := range []string{"первый вопрос", "второй вопрос"} {
+		if err := processor.Handle(context.Background(), Transcription{UtteranceID: uint64(id + 1), Text: text}); err != nil {
+			t.Fatalf("Handle(%q) = %v", text, err)
+		}
+	}
+	if len(requests) != 2 {
+		t.Fatalf("generator calls = %d, want 2", len(requests))
+	}
+	wantSecond := []dialogue.Message{
+		{Role: dialogue.RoleUser, Content: "первый вопрос"},
+		{Role: dialogue.RoleAssistant, Content: "ответ"},
+		{Role: dialogue.RoleUser, Content: "второй вопрос"},
+	}
+	if !reflect.DeepEqual(requests[1].Dialogue.Messages, wantSecond) {
+		t.Fatalf("second request = %+v, want %+v", requests[1].Dialogue.Messages, wantSecond)
+	}
+	if !reflect.DeepEqual(manager.Snapshot().Messages, append(wantSecond, dialogue.Message{Role: dialogue.RoleAssistant, Content: "ответ"})) {
+		t.Fatalf("completed history = %+v", manager.Snapshot().Messages)
+	}
+}
+
+func TestInputProcessorWithResponderRemovesWakePrefixButPreservesOriginalText(t *testing.T) {
+	normalizer, controlRouter, manager := inputProcessorDependencies(t, router.ModeWake, time.Second)
+	now := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	var request llm.Request
+	responder, err := NewResponder(manager, fakeGenerator{generate: func(_ context.Context, got llm.Request, emit llm.Emit) error {
+		request = got
+		return emit(llm.TextDelta{Text: "готово"})
+	}}, llm.Options{Temperature: 0.4, MaxTokens: 20}, func(context.Context, Response) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	processor, err := NewInputProcessor(normalizer, controlRouter, manager, responder.Handle, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := processor.Handle(context.Background(), Transcription{UtteranceID: 42, Text: "Ассистент, Как ДЕЛА?"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []dialogue.Message{{Role: dialogue.RoleUser, Content: "Как ДЕЛА?"}}
+	if !reflect.DeepEqual(request.Dialogue.Messages, want) {
+		t.Fatalf("model messages = %+v, want original query text without wake prefix", request.Dialogue.Messages)
+	}
+}
+
+func TestInputProcessorResetAndFiltersBeforeResponder(t *testing.T) {
+	_, controlRouter, manager := inputProcessorDependencies(t, router.ModeAlways, 0)
+	filteredNormalizer, err := transcript.NewNormalizer(transcript.Options{MinSignificantRunes: 2, IgnoredExact: []string{"отфильтрованная фраза"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalizer := filteredNormalizer
+	var requests []llm.Request
+	responder, err := NewResponder(manager, fakeGenerator{generate: func(_ context.Context, request llm.Request, emit llm.Emit) error {
+		requests = append(requests, request)
+		return emit(llm.TextDelta{Text: "ответ"})
+	}}, llm.Options{Temperature: 0.4, MaxTokens: 20}, func(context.Context, Response) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	processor, err := NewInputProcessor(normalizer, controlRouter, manager, responder.Handle, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"старый вопрос", "очисти историю", "новый вопрос"} {
+		if err := processor.Handle(context.Background(), Transcription{Text: text}); err != nil {
+			t.Fatalf("Handle(%q) = %v", text, err)
+		}
+	}
+	if len(requests) != 2 {
+		t.Fatalf("generator calls = %d, want 2", len(requests))
+	}
+	if !reflect.DeepEqual(requests[1].Dialogue.Messages, []dialogue.Message{{Role: dialogue.RoleUser, Content: "новый вопрос"}}) {
+		t.Fatalf("request after history reset contains old messages: %+v", requests[1].Dialogue.Messages)
+	}
+	if err := processor.Handle(context.Background(), Transcription{Text: "отфильтрованная фраза"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := processor.Handle(context.Background(), Transcription{Text: "пауза"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := processor.Handle(context.Background(), Transcription{Text: "не отправлять пока на паузе"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("filtered or paused input reached generator: calls=%d", len(requests))
+	}
+	if err := processor.Handle(context.Background(), Transcription{Text: "продолжай"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := processor.Handle(context.Background(), Transcription{Text: "после паузы"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 3 || requests[2].Dialogue.Messages[0].Content != "новый вопрос" {
+		t.Fatalf("post-resume requests = %+v", requests)
 	}
 }
 
