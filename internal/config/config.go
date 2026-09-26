@@ -303,12 +303,6 @@ func (cfg Config) Validate() error {
 	if strings.TrimSpace(cfg.App.SystemPrompt) == "" {
 		return errors.New("app.system_prompt: значение обязательно")
 	}
-	if cfg.Log.Level != "debug" && cfg.Log.Level != "info" && cfg.Log.Level != "warn" && cfg.Log.Level != "error" {
-		return fmt.Errorf("log.level: неизвестный уровень %q", cfg.Log.Level)
-	}
-	if cfg.Log.Format != "text" && cfg.Log.Format != "json" {
-		return fmt.Errorf("log.format: неизвестный формат %q", cfg.Log.Format)
-	}
 	if cfg.Audio.BufferFrames < 2 {
 		return errors.New("audio.buffer_frames: значение должно быть не меньше 2")
 	}
