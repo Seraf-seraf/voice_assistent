@@ -34,5 +34,14 @@ func run() error {
 	}
 
 	log.Info("Конфигурация загружена", "режим", cfg.App.Mode)
+	components, err := newVADComponents(cfg.Audio, cfg.VAD)
+	if err != nil {
+		return fmt.Errorf("создать VAD: %w", err)
+	}
+	defer func() {
+		if err := components.detector.Close(); err != nil {
+			log.Error("Закрыть VAD detector", "ошибка", err)
+		}
+	}()
 	return nil
 }

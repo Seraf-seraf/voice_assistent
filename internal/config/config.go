@@ -310,23 +310,8 @@ func (cfg Config) Validate() error {
 	if cfg.Log.Format != "text" && cfg.Log.Format != "json" {
 		return fmt.Errorf("log.format: неизвестный формат %q", cfg.Log.Format)
 	}
-	if cfg.Audio.SampleRate != 16000 || cfg.Audio.Channels != 1 {
-		return errors.New("audio: VAD требует sample_rate=16000 и channels=1")
-	}
-	if cfg.Audio.FrameMS != 10 && cfg.Audio.FrameMS != 20 && cfg.Audio.FrameMS != 30 {
-		return errors.New("audio.frame_ms: допустимы 10, 20 или 30")
-	}
 	if cfg.Audio.BufferFrames < 2 {
 		return errors.New("audio.buffer_frames: значение должно быть не меньше 2")
-	}
-	if cfg.VAD.Aggressiveness < 0 || cfg.VAD.Aggressiveness > 3 {
-		return errors.New("vad.aggressiveness: значение должно быть от 0 до 3")
-	}
-	if cfg.VAD.PreRoll < 0 || cfg.VAD.MinSpeech <= 0 || cfg.VAD.EndSilence <= 0 || cfg.VAD.MaxUtterance <= 0 {
-		return errors.New("vad: интервалы должны быть положительными, pre_roll может быть равен 0")
-	}
-	if cfg.VAD.MaxUtterance <= cfg.VAD.MinSpeech {
-		return errors.New("vad.max_utterance должен быть больше vad.min_speech")
 	}
 	if err := validateServiceURL(cfg.STT.URL); err != nil {
 		return fmt.Errorf("stt.url: %w", err)
