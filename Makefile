@@ -29,16 +29,6 @@ run:
 	$(GO) run ./cmd/assistant -config config/assistant.yaml
 .PHONY: run
 
-webui:
-	docker run -d \
-	--name open-webui \
-	--restart always \
-	-p 3000:8080 \
-	--add-host=host.docker.internal:host-gateway \
-	-v open-webui:/app/backend/data \
-	ghcr.io/open-webui/open-webui:main
-.PHONY: webui
-
 up:
 	docker compose -f docker/docker-compose.yaml up --build --pull missing
 .PHONY: up

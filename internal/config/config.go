@@ -109,11 +109,6 @@ type WakeConfig struct {
 	ActivationWindow Duration `yaml:"activation_window"`
 }
 
-type StorageConfig struct {
-	ConversationsDir string `yaml:"conversations_dir"`
-	RetentionDays    int    `yaml:"retention_days"`
-}
-
 type ControlConfig struct {
 	PTTKey string `yaml:"ptt_key"`
 }
