@@ -45,6 +45,7 @@ type Config struct {
 	VAD        VADConfig        `yaml:"vad"`
 	STT        STTConfig        `yaml:"stt"`
 	LLM        LLMConfig        `yaml:"llm"`
+	TTS        TTSConfig        `yaml:"tts"`
 	Dialogue   DialogueConfig   `yaml:"dialogue"`
 	Transcript TranscriptConfig `yaml:"transcript"`
 	Wake       WakeConfig       `yaml:"wake"`
@@ -97,6 +98,12 @@ type LLMConfig struct {
 	MaxTokens   int      `yaml:"max_tokens"`
 }
 
+type TTSConfig struct {
+	ModelDir string   `yaml:"model_dir"`
+	Threads  int      `yaml:"threads"`
+	Timeout  Duration `yaml:"timeout"`
+}
+
 type DialogueConfig struct {
 	MaxHistoryMessages int `yaml:"max_history_messages"`
 }
@@ -143,6 +150,7 @@ func Default() Config {
 			ContextSize: 4096, GPULayers: 99, Threads: 4, Timeout: Duration(30 * time.Second),
 			Temperature: 0.4, MaxTokens: 512,
 		},
+		TTS:      TTSConfig{Threads: 2, Timeout: Duration(5 * time.Minute)},
 		Dialogue: DialogueConfig{MaxHistoryMessages: 20},
 		Transcript: TranscriptConfig{
 			MinSignificantRunes: 2,
@@ -210,6 +218,7 @@ func applyEnvironment(cfg *Config) error {
 		{"ASSISTANT_STT_API_KEY", &cfg.STT.APIKey},
 		{"ASSISTANT_LLM_MODEL", &cfg.LLM.Model},
 		{"ASSISTANT_LLM_LIBRARY_DIR", &cfg.LLM.LibraryDir},
+		{"ASSISTANT_TTS_MODEL_DIR", &cfg.TTS.ModelDir},
 		{"ASSISTANT_PTT_KEY", &cfg.Control.PTTKey},
 	}
 	for _, value := range stringValues {
@@ -219,6 +228,8 @@ func applyEnvironment(cfg *Config) error {
 	}
 
 	setters := map[string]func(string) error{
+		"ASSISTANT_TTS_THREADS":            intSetter(&cfg.TTS.Threads),
+		"ASSISTANT_TTS_TIMEOUT":            durationSetter(&cfg.TTS.Timeout),
 		"ASSISTANT_AUDIO_SAMPLE_RATE":      intSetter(&cfg.Audio.SampleRate),
 		"ASSISTANT_AUDIO_CHANNELS":         intSetter(&cfg.Audio.Channels),
 		"ASSISTANT_AUDIO_FRAME_MS":         intSetter(&cfg.Audio.FrameMS),
@@ -310,10 +321,10 @@ func splitNonEmpty(raw string) []string {
 
 func (cfg Config) Validate() error {
 	if cfg.Audio.BufferFrames < 2 {
-		return errors.New("audio.buffer_frames: значение должно быть не меньше 2")
+		return errors.New("параметр audio.buffer_frames должен быть не меньше 2")
 	}
 	if strings.TrimSpace(cfg.Control.PTTKey) == "" {
-		return errors.New("control.ptt_key: значение обязательно")
+		return errors.New("параметр control.ptt_key обязателен")
 	}
 	return nil
 }

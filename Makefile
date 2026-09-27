@@ -48,3 +48,15 @@ install-llamacpp-cuda12:
 test-llamacpp-integration:
 	ASSISTANT_LLM_LIBRARY_DIR="$${ASSISTANT_LLM_LIBRARY_DIR:-$(LLAMA_LIB_DIR)}" go test -tags=llm_integration -count=1 -timeout=180s ./internal/llm/llamacpp
 .PHONY: test-llamacpp-integration
+
+test-tts-integration:
+	go test -tags=tts_integration -count=1 -timeout=180s ./internal/tts/sherpa
+.PHONY: test-tts-integration
+
+test-playback-integration:
+	go test -tags=playback_integration -count=1 -timeout=30s ./internal/audio/output/alsa
+.PHONY: test-playback-integration
+
+package-linux-tts: build
+	./scripts/package-linux-tts.sh
+.PHONY: package-linux-tts

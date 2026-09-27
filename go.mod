@@ -6,6 +6,7 @@ toolchain go1.27.1
 
 require (
 	github.com/gen2brain/malgo v0.11.25
+	github.com/k2-fsa/sherpa-onnx-go-linux v1.12.35
 	github.com/robotn/gohook v0.42.3
 	github.com/rolandhe/go-vad v0.0.0-20260516173913-73b02b0699ec
 	github.com/youpy/go-wav v0.3.2

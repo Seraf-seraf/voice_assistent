@@ -9,6 +9,9 @@ import (
 )
 
 func TestLoadUsesDefaultsAndEnvironment(t *testing.T) {
+	unsetEnv(t, "ASSISTANT_TTS_MODEL_DIR")
+	unsetEnv(t, "ASSISTANT_TTS_THREADS")
+	unsetEnv(t, "ASSISTANT_TTS_TIMEOUT")
 	t.Setenv("ASSISTANT_LLM_MODEL", "qwen-test")
 	t.Setenv("ASSISTANT_LLM_LIBRARY_DIR", "/native")
 	t.Setenv("ASSISTANT_LLM_CONTEXT_SIZE", "8192")
@@ -43,6 +46,78 @@ func TestLoadUsesDefaultsAndEnvironment(t *testing.T) {
 	}
 	if cfg.Transcript.MinSignificantRunes != 3 || len(cfg.Transcript.IgnoredExact) != 2 {
 		t.Fatalf("Transcript config = %+v", cfg.Transcript)
+	}
+	if cfg.TTS.ModelDir != "" || cfg.TTS.Threads != 2 || cfg.TTS.Timeout.Std() != 5*time.Minute {
+		t.Fatalf("TTS defaults = %+v", cfg.TTS)
+	}
+}
+
+func TestLoadTTSYamlAndEnvironmentPrecedence(t *testing.T) {
+	path := writeConfig(t, `
+tts:
+  model_dir: /models/from-file
+  threads: 4
+  timeout: 3m
+audio:
+  output_device: hw:0
+`)
+	t.Setenv("ASSISTANT_TTS_MODEL_DIR", "/models/from-env")
+	t.Setenv("ASSISTANT_TTS_THREADS", "6")
+	t.Setenv("ASSISTANT_TTS_TIMEOUT", "7m")
+	t.Setenv("ASSISTANT_AUDIO_OUTPUT_DEVICE", "pulse")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TTS.ModelDir != "/models/from-env" || cfg.TTS.Threads != 6 || cfg.TTS.Timeout.Std() != 7*time.Minute {
+		t.Fatalf("TTS environment did not override YAML: %+v", cfg.TTS)
+	}
+	if cfg.Audio.OutputDevice != "pulse" {
+		t.Fatalf("Audio.OutputDevice = %q", cfg.Audio.OutputDevice)
+	}
+
+}
+
+func TestLoadTTSYamlValuesWithoutEnvironment(t *testing.T) {
+	unsetEnv(t, "ASSISTANT_TTS_MODEL_DIR")
+	unsetEnv(t, "ASSISTANT_TTS_THREADS")
+	unsetEnv(t, "ASSISTANT_TTS_TIMEOUT")
+	path := writeConfig(t, `
+tts:
+  model_dir: /models/from-file
+  threads: 4
+  timeout: 3m
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TTS.ModelDir != "/models/from-file" || cfg.TTS.Threads != 4 || cfg.TTS.Timeout.Std() != 3*time.Minute {
+		t.Fatalf("TTS YAML values = %+v", cfg.TTS)
+	}
+}
+
+func TestLoadRejectsInvalidTTSEnvironmentTypes(t *testing.T) {
+	for _, test := range []struct{ name, value string }{
+		{"ASSISTANT_TTS_THREADS", "many"},
+		{"ASSISTANT_TTS_TIMEOUT", "later"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv(test.name, test.value)
+			if _, err := Load(""); err == nil || !strings.Contains(err.Error(), test.name) {
+				t.Fatalf("Load() error=%v, want %s parse error", err, test.name)
+			}
+		})
+	}
+}
+
+func TestLoadDoesNotValidateNativeTTSOptions(t *testing.T) {
+	t.Setenv("ASSISTANT_TTS_MODEL_DIR", "")
+	t.Setenv("ASSISTANT_TTS_THREADS", "0")
+	t.Setenv("ASSISTANT_TTS_TIMEOUT", "0s")
+	if _, err := Load(""); err != nil {
+		t.Fatalf("Load() performed native TTS validation: %v", err)
 	}
 }
 
@@ -136,4 +211,19 @@ func writeConfig(t *testing.T, content string) string {
 		t.Fatalf("WriteFile() error: %v", err)
 	}
 	return path
+}
+
+func unsetEnv(t *testing.T, name string) {
+	t.Helper()
+	value, wasSet := os.LookupEnv(name)
+	if err := os.Unsetenv(name); err != nil {
+		t.Fatalf("Unsetenv(%q): %v", name, err)
+	}
+	t.Cleanup(func() {
+		if wasSet {
+			_ = os.Setenv(name, value)
+		} else {
+			_ = os.Unsetenv(name)
+		}
+	})
 }

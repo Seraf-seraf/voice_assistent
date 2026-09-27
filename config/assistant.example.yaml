@@ -11,11 +11,16 @@ log:
 
 audio:
   input_device: ""
-  output_device: ""
+  output_device: "" # В Linux TTS это имя ALSA PCM, не ID устройства захвата.
   sample_rate: 16000
   channels: 1
   frame_ms: 20
   buffer_frames: 64
+
+tts:
+  model_dir: ""
+  threads: 2
+  timeout: 5m
 
 vad:
   aggressiveness: 2
