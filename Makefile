@@ -41,10 +41,10 @@ down:
 	docker compose -f docker/docker-compose.yaml down
 .PHONY: down
 
-llm-native:
+install-llamacpp-cuda12:
 	go run github.com/hybridgroup/yzma@$(YZMA_VERSION) install --version $(LLAMA_CPP_VERSION) --processor cuda-12 --os "$(NATIVE_OS)" --lib "$(LLAMA_LIB_DIR)" --verify require
-.PHONY: llm-native
+.PHONY: install-llamacpp-cuda12
 
-test-native:
+test-llamacpp-integration:
 	ASSISTANT_LLM_LIBRARY_DIR="$${ASSISTANT_LLM_LIBRARY_DIR:-$(LLAMA_LIB_DIR)}" go test -tags=llm_integration -count=1 -timeout=180s ./internal/llm/llamacpp
-.PHONY: test-native
+.PHONY: test-llamacpp-integration

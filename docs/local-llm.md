@@ -44,8 +44,8 @@ export ASSISTANT_LLM_LIBRARY_DIR="$PWD/.native/llama-v0.5.0/linux-amd64-cuda12"
 
 dpkg-query -W -f='${Status}\n' libffi8
 nvidia-smi
-make llm-native
-make test-native
+make install-llamacpp-cuda12
+make test-llamacpp-integration
 ```
 
 `libffi8` требуется Go FFI binding при загрузке пакета; Makefile не устанавливает
