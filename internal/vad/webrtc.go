@@ -41,12 +41,12 @@ func (d *webRTCDetector) Classify(frame audio.Frame) (Activity, error) {
 		return Silence, errors.New("WebRTC VAD уже закрыт")
 	}
 	if err := frame.Validate(d.format); err != nil {
-		return Silence, fmt.Errorf("проверить audio frame: %w", err)
+		return Silence, fmt.Errorf("проверить аудиокадр: %w", err)
 	}
 
 	result, err := d.engine.Process(frame.Samples)
 	if err != nil {
-		return Silence, fmt.Errorf("классифицировать audio frame: %w", err)
+		return Silence, fmt.Errorf("классифицировать аудиокадр: %w", err)
 	}
 	if result == webrtc.ResultVoice {
 		return Speech, nil
@@ -61,16 +61,16 @@ func (d *webRTCDetector) Close() error {
 
 func validateWebRTCFormat(format audio.Format) error {
 	if err := format.Validate(); err != nil {
-		return fmt.Errorf("audio format: %w", err)
+		return fmt.Errorf("формат аудио: %w", err)
 	}
 	if format.SampleRate != 16000 {
-		return errors.New("WebRTC VAD требует sample rate 16000 Hz")
+		return errors.New("WebRTC VAD требует частоту дискретизации 16000 Гц")
 	}
 	if format.Channels != 1 {
-		return errors.New("WebRTC VAD требует mono audio")
+		return errors.New("WebRTC VAD требует одноканальный звук")
 	}
 	if format.FrameDuration != 10*time.Millisecond && format.FrameDuration != 20*time.Millisecond && format.FrameDuration != 30*time.Millisecond {
-		return errors.New("WebRTC VAD поддерживает frames длительностью 10, 20 или 30 ms")
+		return errors.New("WebRTC VAD поддерживает кадры длительностью 10, 20 или 30 мс")
 	}
 	return nil
 }

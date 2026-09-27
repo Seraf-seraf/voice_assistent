@@ -23,7 +23,7 @@ type Responder struct {
 
 func NewResponder(manager *dialogue.Manager, generator llm.Generator, options llm.Options, sink ResponseSink) (*Responder, error) {
 	if manager == nil || generator == nil || isNilDependency(generator) || sink == nil || isNilDependency(sink) {
-		return nil, errors.New("зависимости responder обязательны")
+		return nil, errors.New("зависимости обработчика ответа обязательны")
 	}
 	if err := options.Validate(); err != nil {
 		return nil, err
@@ -37,7 +37,7 @@ func (r *Responder) Handle(ctx context.Context, query Query) (resultErr error) {
 	}
 	turnID, err := r.dialogue.BeginTurn(query.Text)
 	if err != nil {
-		return fmt.Errorf("begin dialogue turn: %w", err)
+		return fmt.Errorf("начать ход диалога: %w", err)
 	}
 	turnCompleted := false
 	sinkCompleted := false
@@ -45,12 +45,12 @@ func (r *Responder) Handle(ctx context.Context, query Query) (resultErr error) {
 		var cleanupErrors []error
 		if !sinkCompleted {
 			if err := r.sink.Abort(context.WithoutCancel(ctx), ResponseAbort{UtteranceID: query.UtteranceID, TurnID: turnID}); err != nil {
-				cleanupErrors = append(cleanupErrors, fmt.Errorf("abort response output for dialogue turn %d: %w", turnID, err))
+				cleanupErrors = append(cleanupErrors, fmt.Errorf("отменить вывод ответа для хода диалога %d: %w", turnID, err))
 			}
 		}
 		if !turnCompleted {
 			if err := r.dialogue.AbortTurn(turnID); err != nil {
-				cleanupErrors = append(cleanupErrors, fmt.Errorf("abort dialogue turn %d: %w", turnID, err))
+				cleanupErrors = append(cleanupErrors, fmt.Errorf("отменить ход диалога %d: %w", turnID, err))
 			}
 		}
 		if len(cleanupErrors) != 0 {
@@ -70,12 +70,12 @@ func (r *Responder) Handle(ctx context.Context, query Query) (resultErr error) {
 			return nil
 		}
 		if err := r.sink.Push(ctx, ResponseDelta{UtteranceID: query.UtteranceID, TurnID: turnID, Text: visible}); err != nil {
-			return fmt.Errorf("push response delta for dialogue turn %d: %w", turnID, err)
+			return fmt.Errorf("передать дельту ответа для хода диалога %d: %w", turnID, err)
 		}
 		_, _ = responseText.WriteString(visible)
 		return nil
 	}); err != nil {
-		return fmt.Errorf("generate response for dialogue turn %d: %w", turnID, err)
+		return fmt.Errorf("сгенерировать ответ для хода диалога %d: %w", turnID, err)
 	}
 	whitespace.Finish()
 	text := responseText.String()
@@ -86,11 +86,11 @@ func (r *Responder) Handle(ctx context.Context, query Query) (resultErr error) {
 		return err
 	}
 	if err := r.sink.Complete(ctx, Response{UtteranceID: query.UtteranceID, TurnID: turnID, Text: text}); err != nil {
-		return fmt.Errorf("complete response output for dialogue turn %d: %w", turnID, err)
+		return fmt.Errorf("завершить вывод ответа для хода диалога %d: %w", turnID, err)
 	}
 	sinkCompleted = true
 	if err := r.dialogue.CompleteTurn(turnID, text); err != nil {
-		return fmt.Errorf("complete dialogue turn %d: %w", turnID, err)
+		return fmt.Errorf("завершить ход диалога %d: %w", turnID, err)
 	}
 	turnCompleted = true
 	return nil

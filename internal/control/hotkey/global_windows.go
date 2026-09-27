@@ -82,7 +82,7 @@ func (h *globalHook) Run(ctx context.Context) error {
 			return nil
 		case event, open := <-rawEvents:
 			if !open {
-				return errors.New("канал Windows keyboard hook неожиданно закрыт")
+				return errors.New("канал обработчика клавиатурных событий Windows неожиданно закрылся")
 			}
 			h.processEvent(event)
 		}
@@ -132,10 +132,10 @@ func waitUntilEnabled(ctx context.Context, stop <-chan struct{}, events <-chan h
 		case <-stop:
 			return nil
 		case <-timer.C:
-			return errors.New("Windows keyboard hook не запустился за 2s")
+			return errors.New("обработчик клавиатурных событий Windows не запустился за 2 с")
 		case event, open := <-events:
 			if !open {
-				return errors.New("канал Windows keyboard hook закрыт при запуске")
+				return errors.New("канал обработчика клавиатурных событий Windows закрылся при запуске")
 			}
 			if event.Kind == hooklib.HookEnabled {
 				return nil

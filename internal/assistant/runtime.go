@@ -27,10 +27,10 @@ type Runtime struct {
 
 func NewRuntime(listener SpeechListener, pipeline SpeechPipeline) (*Runtime, error) {
 	if listener == nil || isNilDependency(listener) {
-		return nil, errors.New("speech listener обязателен")
+		return nil, errors.New("слушатель речи обязателен")
 	}
 	if pipeline == nil || isNilDependency(pipeline) {
-		return nil, errors.New("speech pipeline обязателен")
+		return nil, errors.New("конвейер обработки речи обязателен")
 	}
 	return &Runtime{listener: listener, pipeline: pipeline}, nil
 }
@@ -111,7 +111,7 @@ func (r *Runtime) Run(parent context.Context) error {
 						cleanupError("speech pipeline", pipelineErr, cancellation),
 					)
 				}
-				return errors.Join(fmt.Errorf("передать speech event: %w", err), wrapError("speech listener", listenerErr), wrapError("speech pipeline", pipelineErr))
+				return errors.Join(fmt.Errorf("передать событие речи: %w", err), wrapError("слушатель речи", listenerErr), wrapError("конвейер обработки речи", pipelineErr))
 			}
 		case err := <-listenerChannel:
 			listenerChannel = nil

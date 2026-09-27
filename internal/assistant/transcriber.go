@@ -29,10 +29,10 @@ type Transcriber struct {
 
 func NewTranscriber(client stt.Client, handler TranscriptionHandler, queueSize int) (*Transcriber, error) {
 	if client == nil || isNilDependency(client) {
-		return nil, errors.New("stt client обязателен")
+		return nil, errors.New("клиент STT обязателен")
 	}
 	if handler == nil {
-		return nil, errors.New("transcription handler обязателен")
+		return nil, errors.New("обработчик распознанного текста обязателен")
 	}
 	if queueSize <= 0 {
 		return nil, errors.New("размер очереди транскрипции должен быть положительным")
@@ -66,11 +66,11 @@ func (t *Transcriber) Run(ctx context.Context) error {
 			}
 			result, err := t.client.Transcribe(ctx, utterance)
 			if err != nil {
-				return fmt.Errorf("transcribe utterance %d: %w", utterance.ID, err)
+				return fmt.Errorf("распознать реплику %d: %w", utterance.ID, err)
 			}
 			transcription := Transcription{UtteranceID: utterance.ID, Text: result.Text, Duration: result.Duration}
 			if err := t.handler(ctx, transcription); err != nil {
-				return fmt.Errorf("handle transcription %d: %w", utterance.ID, err)
+				return fmt.Errorf("обработать распознанный текст %d: %w", utterance.ID, err)
 			}
 		}
 	}

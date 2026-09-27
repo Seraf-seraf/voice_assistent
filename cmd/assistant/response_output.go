@@ -21,7 +21,7 @@ var _ assistant.ResponseSink = (*responseOutput)(nil)
 
 func newResponseOutput(output io.Writer) (*responseOutput, error) {
 	if output == nil || isNilWriter(output) {
-		return nil, errors.New("response output обязателен")
+		return nil, errors.New("вывод ответа обязателен")
 	}
 	return &responseOutput{output: output}, nil
 }
@@ -31,22 +31,22 @@ func (o *responseOutput) Push(ctx context.Context, delta assistant.ResponseDelta
 		return err
 	}
 	if delta.Text == "" {
-		return errors.New("response delta не должен быть пустым")
+		return errors.New("дельта ответа не должна быть пустой")
 	}
 	if o.active {
 		if delta.UtteranceID != o.utteranceID || delta.TurnID != o.turnID {
-			return errors.New("response delta не совпадает с активным turn")
+			return errors.New("дельта ответа не совпадает с активным ходом")
 		}
 	} else {
 		o.active = true
 		o.utteranceID = delta.UtteranceID
 		o.turnID = delta.TurnID
 		if err := writeExact(o.output, "Ассистент: "); err != nil {
-			return fmt.Errorf("write response prefix: %w", err)
+			return fmt.Errorf("записать префикс ответа: %w", err)
 		}
 	}
 	if err := writeExact(o.output, delta.Text); err != nil {
-		return fmt.Errorf("write response delta: %w", err)
+		return fmt.Errorf("записать дельту ответа: %w", err)
 	}
 	return nil
 }
@@ -56,10 +56,10 @@ func (o *responseOutput) Complete(ctx context.Context, response assistant.Respon
 		return err
 	}
 	if !o.active || response.UtteranceID != o.utteranceID || response.TurnID != o.turnID {
-		return errors.New("response не совпадает с активным stream")
+		return errors.New("ответ не совпадает с активным потоком")
 	}
 	if err := writeExact(o.output, "\n"); err != nil {
-		return fmt.Errorf("terminate response line: %w", err)
+		return fmt.Errorf("завершить строку ответа: %w", err)
 	}
 	o.reset()
 	return nil
@@ -70,12 +70,12 @@ func (o *responseOutput) Abort(_ context.Context, abort assistant.ResponseAbort)
 		return nil
 	}
 	if abort.UtteranceID != o.utteranceID || abort.TurnID != o.turnID {
-		return errors.New("response abort не совпадает с активным stream")
+		return errors.New("отмена ответа не совпадает с активным потоком")
 	}
 	err := writeExact(o.output, "\n")
 	o.reset()
 	if err != nil {
-		return fmt.Errorf("terminate aborted response line: %w", err)
+		return fmt.Errorf("завершить строку отменённого ответа: %w", err)
 	}
 	return nil
 }
@@ -99,14 +99,14 @@ func writeExact(output io.Writer, text string) error {
 
 func newTranscriptionOutput(output io.Writer) (assistant.TranscriptionHandler, error) {
 	if output == nil || isNilWriter(output) {
-		return nil, errors.New("transcription output обязателен")
+		return nil, errors.New("вывод распознанного текста обязателен")
 	}
 	return func(ctx context.Context, transcription assistant.Transcription) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if err := writeExact(output, "Вы: "+transcription.Text+"\n"); err != nil {
-			return fmt.Errorf("write transcription: %w", err)
+			return fmt.Errorf("записать распознанный текст: %w", err)
 		}
 		return nil
 	}, nil

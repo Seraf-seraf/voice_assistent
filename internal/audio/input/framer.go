@@ -11,7 +11,7 @@ import (
 	"github.com/Seraf-seraf/voice_assistent/internal/audio"
 )
 
-var ErrClosed = errors.New("PCM framer закрыт")
+var ErrClosed = errors.New("формирователь PCM закрыт")
 
 type Framer struct {
 	format audio.Format
@@ -26,13 +26,13 @@ type Framer struct {
 
 func NewFramer(format audio.Format, queueSize int) (*Framer, error) {
 	if err := format.Validate(); err != nil {
-		return nil, fmt.Errorf("audio format: %w", err)
+		return nil, fmt.Errorf("формат аудио: %w", err)
 	}
 	if format.Channels != 1 {
-		return nil, errors.New("PCM framer ожидает mono audio")
+		return nil, errors.New("формирователь PCM ожидает одноканальный звук")
 	}
 	if queueSize <= 0 {
-		return nil, errors.New("размер очереди frames должен быть положительным")
+		return nil, errors.New("размер очереди кадров должен быть положительным")
 	}
 
 	samplesPerFrame := format.SamplesPerFrame()
@@ -47,10 +47,10 @@ func NewFramer(format audio.Format, queueSize int) (*Framer, error) {
 // захвата первого sample переданного блока. Метод не блокируется на full queue.
 func (f *Framer) WritePCM(data []byte, firstSampleAt time.Time) error {
 	if len(data)%2 != 0 {
-		return errors.New("PCM16 block должен содержать чётное число bytes")
+		return errors.New("блок PCM16 должен содержать чётное число байт")
 	}
 	if len(data) > 0 && firstSampleAt.IsZero() {
-		return errors.New("timestamp первого sample обязателен")
+		return errors.New("временная метка первого отсчёта обязательна")
 	}
 
 	f.mu.Lock()

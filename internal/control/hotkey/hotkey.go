@@ -8,10 +8,10 @@ import (
 )
 
 var (
-	ErrUnavailable = errors.New("global hotkey доступен только в Windows-сборке с CGO")
-	ErrClosed      = errors.New("global hotkey закрыт")
-	ErrRunning     = errors.New("global hotkey уже запущен")
-	ErrInUse       = errors.New("другой global hotkey уже запущен")
+	ErrUnavailable = errors.New("глобальная клавиша доступна только в сборке Windows с CGO")
+	ErrClosed      = errors.New("глобальная клавиша закрыта")
+	ErrRunning     = errors.New("глобальная клавиша уже запущена")
+	ErrInUse       = errors.New("другая глобальная клавиша уже запущена")
 )
 
 type State struct {

@@ -37,19 +37,19 @@ func NewInputProcessor(
 	now Clock,
 ) (*InputProcessor, error) {
 	if normalizer == nil {
-		return nil, errors.New("transcript normalizer обязателен")
+		return nil, errors.New("нормализатор транскрипта обязателен")
 	}
 	if controlRouter == nil {
-		return nil, errors.New("control router обязателен")
+		return nil, errors.New("маршрутизатор команд обязателен")
 	}
 	if manager == nil {
-		return nil, errors.New("dialogue manager обязателен")
+		return nil, errors.New("менеджер диалога обязателен")
 	}
 	if queryHandler == nil {
-		return nil, errors.New("query handler обязателен")
+		return nil, errors.New("обработчик запросов обязателен")
 	}
 	if now == nil {
-		return nil, errors.New("clock обязателен")
+		return nil, errors.New("источник времени обязателен")
 	}
 	return &InputProcessor{
 		normalizer: normalizer, router: controlRouter, dialogue: manager,
@@ -63,7 +63,7 @@ func (p *InputProcessor) Handle(ctx context.Context, transcription Transcription
 		if errors.Is(err, transcript.ErrEmpty) || errors.Is(err, transcript.ErrTooShort) || errors.Is(err, transcript.ErrFiltered) {
 			return nil
 		}
-		return fmt.Errorf("normalize transcription %d: %w", transcription.UtteranceID, err)
+		return fmt.Errorf("нормализовать распознанный текст %d: %w", transcription.UtteranceID, err)
 	}
 	decision := p.router.Route(normalized, p.now())
 	switch decision.Kind {
@@ -75,7 +75,7 @@ func (p *InputProcessor) Handle(ctx context.Context, transcription Transcription
 			Text:        decision.Text,
 			Canonical:   decision.Canonical,
 		}); err != nil {
-			return fmt.Errorf("handle query for utterance %d: %w", transcription.UtteranceID, err)
+			return fmt.Errorf("обработать запрос для реплики %d: %w", transcription.UtteranceID, err)
 		}
 		return nil
 	case router.DecisionCommand:
@@ -86,9 +86,9 @@ func (p *InputProcessor) Handle(ctx context.Context, transcription Transcription
 			p.dialogue.Reset()
 			return nil
 		default:
-			return fmt.Errorf("неизвестная router command %d", decision.Command)
+			return fmt.Errorf("неизвестная команда маршрутизатора %d", decision.Command)
 		}
 	default:
-		return fmt.Errorf("неизвестный router decision %d", decision.Kind)
+		return fmt.Errorf("неизвестный результат маршрутизации %d", decision.Kind)
 	}
 }

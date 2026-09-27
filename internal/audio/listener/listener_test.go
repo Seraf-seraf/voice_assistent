@@ -65,7 +65,7 @@ func TestListenerReturnsSourceError(t *testing.T) {
 	listener := newListener(t, source, &fakeDetector{}, newSegmenter(t, testFormat()))
 
 	err := listener.Run(context.Background())
-	if !errors.Is(err, wantErr) || !strings.Contains(err.Error(), "получить audio frames") {
+	if !errors.Is(err, wantErr) || !strings.Contains(err.Error(), "получить аудиокадры") {
 		t.Fatalf("Run() error = %v, want source error", err)
 	}
 }

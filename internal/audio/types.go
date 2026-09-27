@@ -14,16 +14,16 @@ type Format struct {
 
 func (f Format) Validate() error {
 	if f.SampleRate <= 0 {
-		return errors.New("sample rate должен быть положительным")
+		return errors.New("частота дискретизации должна быть положительной")
 	}
 	if f.Channels <= 0 {
 		return errors.New("число каналов должно быть положительным")
 	}
 	if f.FrameDuration <= 0 {
-		return errors.New("длительность frame должна быть положительной")
+		return errors.New("длительность кадра должна быть положительной")
 	}
 	if int64(f.SampleRate)*f.FrameDuration.Nanoseconds()%int64(time.Second) != 0 {
-		return errors.New("длительность frame должна содержать целое число samples")
+		return errors.New("длительность кадра должна содержать целое число отсчётов")
 	}
 	return nil
 }
@@ -39,10 +39,10 @@ type Frame struct {
 
 func (f Frame) Validate(format Format) error {
 	if f.CapturedAt.IsZero() {
-		return errors.New("frame timestamp обязателен")
+		return errors.New("временная метка кадра обязательна")
 	}
 	if len(f.Samples) != format.SamplesPerFrame() {
-		return fmt.Errorf("frame содержит %d samples, требуется %d", len(f.Samples), format.SamplesPerFrame())
+		return fmt.Errorf("кадр содержит %d отсчётов, требуется %d", len(f.Samples), format.SamplesPerFrame())
 	}
 	return nil
 }

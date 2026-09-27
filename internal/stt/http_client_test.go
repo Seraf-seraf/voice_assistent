@@ -92,7 +92,7 @@ func TestHTTPClientValidatesUtterance(t *testing.T) {
 		Endpoint: "http://127.0.0.1/inference", Timeout: time.Second, MaxResponseBytes: 1024,
 	})
 	_, err := client.Transcribe(context.Background(), audio.Utterance{})
-	if err == nil || !strings.Contains(err.Error(), "audio format") {
+	if err == nil || !strings.Contains(err.Error(), "формат аудио") {
 		t.Fatalf("Transcribe() error = %v, want format error", err)
 	}
 }

@@ -12,8 +12,8 @@ import (
 )
 
 var (
-	ErrRunning = errors.New("listener уже запущен")
-	ErrClosed  = errors.New("listener уже закрыт")
+	ErrRunning = errors.New("слушатель уже запущен")
+	ErrClosed  = errors.New("слушатель уже закрыт")
 )
 
 const (
@@ -32,13 +32,13 @@ type Listener struct {
 
 func New(source input.Source, detector vad.Detector, segmenter *vad.Segmenter, eventQueueSize int) (*Listener, error) {
 	if source == nil {
-		return nil, errors.New("audio source обязателен")
+		return nil, errors.New("источник аудио обязателен")
 	}
 	if detector == nil {
-		return nil, errors.New("VAD detector обязателен")
+		return nil, errors.New("детектор VAD обязателен")
 	}
 	if segmenter == nil {
-		return nil, errors.New("VAD segmenter обязателен")
+		return nil, errors.New("сегментатор VAD обязателен")
 	}
 	if eventQueueSize <= 0 {
 		return nil, errors.New("размер очереди событий должен быть положительным")
@@ -66,12 +66,12 @@ func (l *Listener) Run(ctx context.Context) (resultErr error) {
 	}()
 	defer func() {
 		if err := l.detector.Close(); err != nil {
-			resultErr = errors.Join(resultErr, fmt.Errorf("закрыть VAD detector: %w", err))
+			resultErr = errors.Join(resultErr, fmt.Errorf("закрыть детектор VAD: %w", err))
 		}
 	}()
 	defer func() {
 		if err := l.source.Close(); err != nil {
-			resultErr = errors.Join(resultErr, fmt.Errorf("закрыть audio source: %w", err))
+			resultErr = errors.Join(resultErr, fmt.Errorf("закрыть источник аудио: %w", err))
 		}
 	}()
 
@@ -86,14 +86,14 @@ func (l *Listener) Run(ctx context.Context) (resultErr error) {
 			return nil
 		case err := <-sourceErrors:
 			if err != nil {
-				return fmt.Errorf("получить audio frames: %w", err)
+				return fmt.Errorf("получить аудиокадры: %w", err)
 			}
 			return nil
 		case frame, open := <-l.source.Frames():
 			if !open {
 				err := <-sourceErrors
 				if err != nil {
-					return fmt.Errorf("получить audio frames: %w", err)
+					return fmt.Errorf("получить аудиокадры: %w", err)
 				}
 				return nil
 			}
@@ -107,11 +107,11 @@ func (l *Listener) Run(ctx context.Context) (resultErr error) {
 func (l *Listener) processFrame(ctx context.Context, frame audio.Frame) error {
 	activity, err := l.detector.Classify(frame)
 	if err != nil {
-		return fmt.Errorf("классифицировать audio frame: %w", err)
+		return fmt.Errorf("классифицировать аудиокадр: %w", err)
 	}
 	events, err := l.segmenter.Process(frame, activity)
 	if err != nil {
-		return fmt.Errorf("сегментировать audio frame: %w", err)
+		return fmt.Errorf("разделить аудиокадр на сегменты: %w", err)
 	}
 	for _, event := range events {
 		select {

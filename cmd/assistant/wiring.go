@@ -48,7 +48,7 @@ func newAudioFormat(cfg config.AudioConfig) audio.Format {
 func newVADComponents(format audio.Format, vadCfg config.VADConfig) (vadComponents, error) {
 	detector, err := vad.NewWebRTCDetector(format, vadCfg.Aggressiveness)
 	if err != nil {
-		return vadComponents{}, fmt.Errorf("создать WebRTC detector: %w", err)
+		return vadComponents{}, fmt.Errorf("создать детектор WebRTC: %w", err)
 	}
 
 	segmenter, err := vad.NewSegmenter(vad.Settings{
@@ -61,11 +61,11 @@ func newVADComponents(format audio.Format, vadCfg config.VADConfig) (vadComponen
 	if err != nil {
 		if closeErr := detector.Close(); closeErr != nil {
 			return vadComponents{}, errors.Join(
-				fmt.Errorf("создать segmenter: %w", err),
-				fmt.Errorf("закрыть WebRTC detector: %w", closeErr),
+				fmt.Errorf("создать сегментатор: %w", err),
+				fmt.Errorf("закрыть детектор WebRTC: %w", closeErr),
 			)
 		}
-		return vadComponents{}, fmt.Errorf("создать segmenter: %w", err)
+		return vadComponents{}, fmt.Errorf("создать сегментатор: %w", err)
 	}
 
 	return vadComponents{detector: detector, segmenter: segmenter}, nil
@@ -82,18 +82,18 @@ func newAudioInputComponents(
 		CaptureDevice: cfg.InputDevice,
 	})
 	if err != nil {
-		return audioInputComponents{}, fmt.Errorf("создать audio source: %w", err)
+		return audioInputComponents{}, fmt.Errorf("создать источник аудио: %w", err)
 	}
 
 	audioListener, err := listener.New(source, vadComponents.detector, vadComponents.segmenter, speechEventQueueSize)
 	if err != nil {
 		if closeErr := source.Close(); closeErr != nil {
 			return audioInputComponents{}, errors.Join(
-				fmt.Errorf("создать listener: %w", err),
-				fmt.Errorf("закрыть audio source: %w", closeErr),
+				fmt.Errorf("создать слушатель: %w", err),
+				fmt.Errorf("закрыть источник аудио: %w", closeErr),
 			)
 		}
-		return audioInputComponents{}, fmt.Errorf("создать listener: %w", err)
+		return audioInputComponents{}, fmt.Errorf("создать слушатель: %w", err)
 	}
 
 	return audioInputComponents{source: source, listener: audioListener}, nil
@@ -107,7 +107,7 @@ func newSTTClient(cfg config.STTConfig) (stt.Client, error) {
 		APIKey:           cfg.APIKey,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("создать STT HTTP client: %w", err)
+		return nil, fmt.Errorf("создать HTTP-клиент STT: %w", err)
 	}
 	return client, nil
 }
@@ -164,7 +164,7 @@ func newInputProcessor(
 	log *slog.Logger,
 ) (*assistant.InputProcessor, error) {
 	if queryHandler == nil {
-		return nil, errors.New("query handler обязателен")
+		return nil, errors.New("обработчик запросов обязателен")
 	}
 	return assistant.NewInputProcessor(normalizer, controlRouter, manager, func(ctx context.Context, query assistant.Query) error {
 		log.Debug("Получен запрос", "utterance_id", query.UtteranceID)

@@ -56,10 +56,10 @@ func NewHTTPClient(options HTTPOptions) (*HTTPClient, error) {
 		return nil, err
 	}
 	if options.Timeout <= 0 {
-		return nil, errors.New("STT timeout должен быть положительным")
+		return nil, errors.New("время ожидания STT должно быть положительным")
 	}
 	if options.MaxResponseBytes <= 0 {
-		return nil, errors.New("STT max response bytes должен быть положительным")
+		return nil, errors.New("максимальный размер ответа STT должен быть положительным")
 	}
 	client := options.HTTPClient
 	if client == nil {
@@ -85,7 +85,7 @@ func (c *HTTPClient) Transcribe(ctx context.Context, utterance audio.Utterance) 
 	defer cancel()
 	request, err := http.NewRequestWithContext(requestContext, http.MethodPost, c.endpoint, requestBody)
 	if err != nil {
-		return Transcript{}, fmt.Errorf("создать STT request: %w", err)
+		return Transcript{}, fmt.Errorf("создать запрос STT: %w", err)
 	}
 	request.Header.Set("Content-Type", contentType)
 	request.Header.Set("Accept", "application/json")
@@ -95,7 +95,7 @@ func (c *HTTPClient) Transcribe(ctx context.Context, utterance audio.Utterance) 
 
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return Transcript{}, fmt.Errorf("выполнить STT request: %w", err)
+		return Transcript{}, fmt.Errorf("выполнить запрос STT: %w", err)
 	}
 	defer response.Body.Close()
 	body, err := readLimited(response.Body, c.maxResponseBytes)
@@ -113,7 +113,7 @@ func (c *HTTPClient) Transcribe(ctx context.Context, utterance audio.Utterance) 
 		Text string `json:"text"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return Transcript{}, fmt.Errorf("прочитать STT response: %w", err)
+		return Transcript{}, fmt.Errorf("прочитать ответ STT: %w", err)
 	}
 	return Transcript{Text: payload.Text, Duration: time.Since(startedAt)}, nil
 }
@@ -123,19 +123,19 @@ func buildRequestBody(utterance audio.Utterance) (*bytes.Buffer, string, error) 
 	writer := multipart.NewWriter(&body)
 	file, err := writer.CreateFormFile("file", "utterance.wav")
 	if err != nil {
-		return nil, "", fmt.Errorf("создать multipart WAV field: %w", err)
+		return nil, "", fmt.Errorf("создать поле WAV в многокомпонентном запросе: %w", err)
 	}
 	if err := encodeWAV(file, utterance); err != nil {
 		return nil, "", err
 	}
 	if err := writer.WriteField("response_format", "json"); err != nil {
-		return nil, "", fmt.Errorf("записать STT response format: %w", err)
+		return nil, "", fmt.Errorf("записать формат ответа STT: %w", err)
 	}
 	if err := writer.WriteField("temperature", "0.0"); err != nil {
-		return nil, "", fmt.Errorf("записать STT temperature: %w", err)
+		return nil, "", fmt.Errorf("записать параметр Temperature STT: %w", err)
 	}
 	if err := writer.Close(); err != nil {
-		return nil, "", fmt.Errorf("закрыть multipart STT request: %w", err)
+		return nil, "", fmt.Errorf("закрыть многокомпонентный запрос STT: %w", err)
 	}
 	return &body, writer.FormDataContentType(), nil
 }
@@ -152,7 +152,7 @@ func encodeWAV(output io.Writer, utterance audio.Utterance) error {
 			chunk[index].Values[0] = int(utterance.Samples[offset+index])
 		}
 		if err := writer.WriteSamples(chunk[:count]); err != nil {
-			return fmt.Errorf("закодировать utterance в WAV: %w", err)
+			return fmt.Errorf("закодировать реплику в WAV: %w", err)
 		}
 		offset += count
 	}
@@ -161,13 +161,13 @@ func encodeWAV(output io.Writer, utterance audio.Utterance) error {
 
 func validateUtterance(utterance audio.Utterance) error {
 	if err := utterance.Format.Validate(); err != nil {
-		return fmt.Errorf("audio format: %w", err)
+		return fmt.Errorf("формат аудио: %w", err)
 	}
 	if utterance.Format.Channels != 1 {
-		return errors.New("STT ожидает mono utterance")
+		return errors.New("STT ожидает одноканальную реплику")
 	}
 	if len(utterance.Samples) == 0 {
-		return errors.New("STT utterance не содержит samples")
+		return errors.New("реплика STT не содержит аудиоотсчётов")
 	}
 	return nil
 }
@@ -175,16 +175,16 @@ func validateUtterance(utterance audio.Utterance) error {
 func validateEndpoint(raw string) error {
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("разобрать STT endpoint: %w", err)
+		return fmt.Errorf("разобрать адрес STT: %w", err)
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return errors.New("STT endpoint поддерживает только http и https")
+		return errors.New("адрес STT поддерживает только протоколы http и https")
 	}
 	if parsed.Host == "" {
-		return errors.New("STT endpoint должен содержать host")
+		return errors.New("адрес STT должен содержать имя узла")
 	}
 	if parsed.User != nil {
-		return errors.New("credentials внутри STT endpoint запрещены")
+		return errors.New("реквизиты доступа в адресе STT запрещены")
 	}
 	return nil
 }
@@ -192,7 +192,7 @@ func validateEndpoint(raw string) error {
 func readLimited(reader io.Reader, limit int64) ([]byte, error) {
 	body, err := io.ReadAll(io.LimitReader(reader, limit+1))
 	if err != nil {
-		return nil, fmt.Errorf("прочитать STT response: %w", err)
+		return nil, fmt.Errorf("прочитать ответ STT: %w", err)
 	}
 	if int64(len(body)) > limit {
 		return nil, ErrResponseTooLarge
@@ -203,10 +203,10 @@ func readLimited(reader io.Reader, limit int64) ([]byte, error) {
 func requireJSON(contentType string) error {
 	mediaType, _, err := mime.ParseMediaType(contentType)
 	if err != nil {
-		return fmt.Errorf("разобрать STT Content-Type: %w", err)
+		return fmt.Errorf("разобрать тип содержимого ответа STT: %w", err)
 	}
 	if mediaType != "application/json" {
-		return fmt.Errorf("STT вернул неподдерживаемый Content-Type %q", mediaType)
+		return fmt.Errorf("STT вернул неподдерживаемый тип содержимого %q", mediaType)
 	}
 	return nil
 }

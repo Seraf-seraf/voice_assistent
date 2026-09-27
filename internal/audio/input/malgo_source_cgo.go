@@ -61,11 +61,11 @@ func NewMalgoSource(options MalgoOptions) (Source, error) {
 func ListCaptureDevices() (devices []CaptureDevice, resultErr error) {
 	audioContext, err := malgo.InitContext(nil, malgo.ContextConfig{}, nil)
 	if err != nil {
-		return nil, fmt.Errorf("создать miniaudio context: %w", err)
+		return nil, fmt.Errorf("создать контекст miniaudio: %w", err)
 	}
 	defer func() {
 		if err := audioContext.Uninit(); err != nil {
-			resultErr = errors.Join(resultErr, fmt.Errorf("закрыть miniaudio context: %w", err))
+			resultErr = errors.Join(resultErr, fmt.Errorf("закрыть контекст miniaudio: %w", err))
 		}
 		audioContext.Free()
 	}()
@@ -94,7 +94,7 @@ func (s *malgoSource) Run(ctx context.Context) (resultErr error) {
 
 	audioContext, err := malgo.InitContext(nil, malgo.ContextConfig{}, nil)
 	if err != nil {
-		return fmt.Errorf("создать miniaudio context: %w", err)
+		return fmt.Errorf("создать контекст miniaudio: %w", err)
 	}
 	var device *malgo.Device
 	defer func() {
@@ -102,7 +102,7 @@ func (s *malgoSource) Run(ctx context.Context) (resultErr error) {
 			device.Uninit()
 		}
 		if err := audioContext.Uninit(); err != nil {
-			resultErr = errors.Join(resultErr, fmt.Errorf("закрыть miniaudio context: %w", err))
+			resultErr = errors.Join(resultErr, fmt.Errorf("закрыть контекст miniaudio: %w", err))
 		}
 		audioContext.Free()
 	}()
@@ -152,7 +152,7 @@ func (s *malgoSource) Run(ctx context.Context) (resultErr error) {
 	case <-s.stop:
 		return nil
 	case err := <-callbackErrors:
-		return fmt.Errorf("обработать входной audio block: %w", err)
+		return fmt.Errorf("обработать входной аудиоблок: %w", err)
 	case <-stopped:
 		return errors.New("аудиоустройство неожиданно остановлено")
 	}

@@ -144,7 +144,7 @@ func TestOpenRejectsInputsBeforeNativeLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 	options.ModelPath, options.LibraryDir = model, dir
-	if _, err := Open(context.Background(), options); err == nil || !strings.Contains(err.Error(), "GGUF magic") {
+	if _, err := Open(context.Background(), options); err == nil || !strings.Contains(err.Error(), "сигнатуру GGUF") {
 		t.Fatalf("invalid magic error=%v", err)
 	}
 }

@@ -18,7 +18,7 @@ var (
 	ErrInvalidOutput  = errors.New("модель вернула некорректный текст")
 	ErrBusy           = errors.New("локальная модель занята")
 	ErrClosed         = errors.New("локальная модель закрыта")
-	ErrGPUUnavailable = errors.New("GPU backend недоступен")
+	ErrGPUUnavailable = errors.New("вычислительный модуль GPU недоступен")
 )
 
 type Options struct {
@@ -54,7 +54,7 @@ var _ llm.Generator = (*Generator)(nil)
 
 func Open(ctx context.Context, options Options) (*Generator, error) {
 	if ctx == nil {
-		return nil, fmt.Errorf("open local model: %w", ErrInvalidRequest)
+		return nil, fmt.Errorf("открыть локальную модель: %w", ErrInvalidRequest)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -67,32 +67,32 @@ func Open(ctx context.Context, options Options) (*Generator, error) {
 
 func validateOptions(options Options) error {
 	if options.ModelPath == "" || containsNUL(options.ModelPath) {
-		return fmt.Errorf("%w: ModelPath обязателен и не должен содержать NUL", ErrInvalidOptions)
+		return fmt.Errorf("%w: путь к модели обязателен и не должен содержать NUL", ErrInvalidOptions)
 	}
 	if options.LibraryDir == "" || containsNUL(options.LibraryDir) {
-		return fmt.Errorf("%w: LibraryDir обязателен и не должен содержать NUL", ErrInvalidOptions)
+		return fmt.Errorf("%w: каталог нативных библиотек обязателен и не должен содержать NUL", ErrInvalidOptions)
 	}
 	if options.ContextSize <= 0 || int64(options.ContextSize) > int64(^uint32(0)>>1) {
-		return fmt.Errorf("%w: ContextSize должен быть в [1, MaxInt32]", ErrInvalidOptions)
+		return fmt.Errorf("%w: размер контекста должен быть в диапазоне [1, MaxInt32]", ErrInvalidOptions)
 	}
 	if options.GPULayers < 0 || int64(options.GPULayers) > int64(^uint32(0)>>1) {
-		return fmt.Errorf("%w: GPULayers должен быть в [0, MaxInt32]", ErrInvalidOptions)
+		return fmt.Errorf("%w: число слоёв GPU должно быть в диапазоне [0, MaxInt32]", ErrInvalidOptions)
 	}
 	if options.Threads <= 0 || int64(options.Threads) > int64(^uint32(0)>>1) {
-		return fmt.Errorf("%w: Threads должен быть в [1, MaxInt32]", ErrInvalidOptions)
+		return fmt.Errorf("%w: число потоков должно быть в диапазоне [1, MaxInt32]", ErrInvalidOptions)
 	}
 	if options.Timeout <= 0 {
-		return fmt.Errorf("%w: Timeout должен быть положительным", ErrInvalidOptions)
+		return fmt.Errorf("%w: время ожидания должно быть положительным", ErrInvalidOptions)
 	}
 	return nil
 }
 
 func newGenerator(backend tokenBackend, timeout time.Duration) (*Generator, error) {
 	if backend == nil || isNilBackend(backend) {
-		return nil, fmt.Errorf("%w: token backend обязателен", ErrInvalidOptions)
+		return nil, fmt.Errorf("%w: адаптер токенизатора обязателен", ErrInvalidOptions)
 	}
 	if timeout <= 0 {
-		return nil, fmt.Errorf("%w: Timeout должен быть положительным", ErrInvalidOptions)
+		return nil, fmt.Errorf("%w: время ожидания должно быть положительным", ErrInvalidOptions)
 	}
 	return &Generator{backend: backend, timeout: timeout}, nil
 }
@@ -109,7 +109,7 @@ func isNilBackend(backend tokenBackend) bool {
 
 func (g *Generator) Generate(ctx context.Context, request llm.Request, emit llm.Emit) (resultErr error) {
 	if ctx == nil {
-		return fmt.Errorf("%w: context обязателен", ErrInvalidRequest)
+		return fmt.Errorf("%w: контекст обязателен", ErrInvalidRequest)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -122,7 +122,7 @@ func (g *Generator) Generate(ctx context.Context, request llm.Request, emit llm.
 		return ErrClosed
 	}
 	if emit == nil {
-		return fmt.Errorf("%w: emit обязателен", ErrInvalidRequest)
+		return fmt.Errorf("%w: функция передачи дельт обязательна", ErrInvalidRequest)
 	}
 	if err := request.Options.Validate(); err != nil {
 		return err
@@ -142,18 +142,18 @@ func (g *Generator) Generate(ctx context.Context, request llm.Request, emit llm.
 			return
 		}
 		if err := g.backend.End(); err != nil {
-			endErr := fmt.Errorf("завершить native request: %w", err)
+			endErr := fmt.Errorf("завершить нативный запрос: %w", err)
 			closeErr := g.backend.Close()
 			g.closed = true
 			if closeErr != nil {
-				resultErr = errors.Join(resultErr, endErr, fmt.Errorf("закрыть native backend: %w", closeErr))
+				resultErr = errors.Join(resultErr, endErr, fmt.Errorf("закрыть нативный вычислительный модуль: %w", closeErr))
 			} else {
 				resultErr = errors.Join(resultErr, endErr)
 			}
 		}
 	}()
 	if err := g.backend.Begin(requestCtx, prompt, request.Options); err != nil {
-		return fmt.Errorf("подготовить native request: %w", err)
+		return fmt.Errorf("подготовить нативный запрос: %w", err)
 	}
 	decoder := textDecoder{}
 	requestEmit := func(delta llm.TextDelta) error {
@@ -171,7 +171,7 @@ func (g *Generator) Generate(ctx context.Context, request llm.Request, emit llm.
 			if ctxErr := requestCtx.Err(); ctxErr != nil {
 				return ctxErr
 			}
-			return fmt.Errorf("получить native token: %w", err)
+			return fmt.Errorf("получить нативный токен: %w", err)
 		}
 		if err := requestCtx.Err(); err != nil {
 			return err
@@ -186,7 +186,7 @@ func (g *Generator) Generate(ctx context.Context, request llm.Request, emit llm.
 			return err
 		}
 		if err := decoder.Push(piece.Bytes, requestEmit); err != nil {
-			return fmt.Errorf("передать text delta: %w", err)
+			return fmt.Errorf("передать текстовую дельту: %w", err)
 		}
 	}
 	if err := requestCtx.Err(); err != nil {
@@ -208,7 +208,7 @@ func (g *Generator) Close() error {
 	}
 	if err := g.backend.Close(); err != nil {
 		g.closed = true
-		return fmt.Errorf("закрыть native backend: %w", err)
+		return fmt.Errorf("закрыть нативный вычислительный модуль: %w", err)
 	}
 	g.closed = true
 	return nil

@@ -40,43 +40,43 @@ type nativeBackend struct {
 func openNative(ctx context.Context, options Options) (_ *Generator, resultErr error) {
 	modelPath, err := filepath.Abs(options.ModelPath)
 	if err != nil {
-		return nil, fmt.Errorf("resolve model path: %w", err)
+		return nil, fmt.Errorf("определить путь к модели: %w", err)
 	}
 	libraryDir, err := filepath.Abs(options.LibraryDir)
 	if err != nil {
-		return nil, fmt.Errorf("resolve native library path: %w", err)
+		return nil, fmt.Errorf("определить путь к нативным библиотекам: %w", err)
 	}
 	modelFile, err := os.Open(modelPath)
 	if err != nil {
-		return nil, fmt.Errorf("open GGUF model: %w", err)
+		return nil, fmt.Errorf("открыть модель GGUF: %w", err)
 	}
 	info, err := modelFile.Stat()
 	if err != nil {
 		_ = modelFile.Close()
-		return nil, fmt.Errorf("stat GGUF model: %w", err)
+		return nil, fmt.Errorf("получить сведения о модели GGUF: %w", err)
 	}
 	if !info.Mode().IsRegular() {
 		_ = modelFile.Close()
-		return nil, fmt.Errorf("model path is not a regular file")
+		return nil, fmt.Errorf("путь к модели не указывает на обычный файл")
 	}
 	var magic [4]byte
 	_, readErr := io.ReadFull(modelFile, magic[:])
 	closeErr := modelFile.Close()
 	if readErr != nil {
-		return nil, fmt.Errorf("read GGUF header: %w", readErr)
+		return nil, fmt.Errorf("прочитать заголовок GGUF: %w", readErr)
 	}
 	if closeErr != nil {
-		return nil, fmt.Errorf("close GGUF model: %w", closeErr)
+		return nil, fmt.Errorf("закрыть файл модели GGUF: %w", closeErr)
 	}
 	if string(magic[:]) != "GGUF" {
-		return nil, fmt.Errorf("model file has invalid GGUF magic")
+		return nil, fmt.Errorf("файл модели содержит неверную сигнатуру GGUF")
 	}
 	libInfo, err := os.Stat(libraryDir)
 	if err != nil {
-		return nil, fmt.Errorf("stat native library directory: %w", err)
+		return nil, fmt.Errorf("получить сведения о каталоге нативных библиотек: %w", err)
 	}
 	if !libInfo.IsDir() {
-		return nil, fmt.Errorf("native library path is not a directory")
+		return nil, fmt.Errorf("путь к нативным библиотекам не указывает на каталог")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -106,7 +106,7 @@ func openNative(ctx context.Context, options Options) (_ *Generator, resultErr e
 	}()
 
 	if err := llama.Load(libraryDir); err != nil {
-		return nil, fmt.Errorf("load llama.cpp libraries: %w", err)
+		return nil, fmt.Errorf("загрузить библиотеки llama.cpp: %w", err)
 	}
 	loaded = true
 	if err := ctx.Err(); err != nil {
@@ -116,7 +116,7 @@ func openNative(ctx context.Context, options Options) (_ *Generator, resultErr e
 	llama.BackendInit()
 	backendInitialized = true
 	if err := llama.GGMLBackendLoadAllFromPath(libraryDir); err != nil {
-		return nil, fmt.Errorf("load llama.cpp backends: %w", err)
+		return nil, fmt.Errorf("загрузить вычислительные модули llama.cpp: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -130,7 +130,7 @@ func openNative(ctx context.Context, options Options) (_ *Generator, resultErr e
 	modelParams.NGpuLayers = int32(options.GPULayers)
 	backend.model, err = llama.ModelLoadFromFile(modelPath, modelParams)
 	if err != nil {
-		return nil, fmt.Errorf("load GGUF model: %w", err)
+		return nil, fmt.Errorf("загрузить модель GGUF: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -144,25 +144,25 @@ func openNative(ctx context.Context, options Options) (_ *Generator, resultErr e
 	contextParams.NThreads = int32(options.Threads)
 	backend.context, err = llama.InitFromModel(backend.model, contextParams)
 	if err != nil {
-		return nil, fmt.Errorf("initialize llama.cpp context: %w", err)
+		return nil, fmt.Errorf("создать контекст llama.cpp: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	backend.contextSize = llama.NCtx(backend.context)
 	if backend.contextSize == 0 {
-		return nil, fmt.Errorf("native context has zero tokens")
+		return nil, fmt.Errorf("в нативном контексте нет токенов")
 	}
 	backend.vocab = llama.ModelGetVocab(backend.model)
 	if backend.vocab == 0 {
-		return nil, fmt.Errorf("model vocabulary is unavailable")
+		return nil, fmt.Errorf("словарь модели недоступен")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	backend.template = llama.ModelChatTemplate(backend.model, "")
 	if backend.template == "" {
-		return nil, fmt.Errorf("model chat template is unavailable")
+		return nil, fmt.Errorf("шаблон чата модели недоступен")
 	}
 	slot := &backend.slot
 	llama.SetAbortCallback(backend.context, func() bool {
@@ -199,31 +199,31 @@ func (b *nativeBackend) Begin(ctx context.Context, prompt string, options llm.Op
 		return err
 	}
 	if int64(len(prompt)) > math.MaxInt32 {
-		return fmt.Errorf("%w: prompt exceeds native byte limit", ErrInvalidRequest)
+		return fmt.Errorf("%w: текст запроса превышает нативное ограничение размера в байтах", ErrInvalidRequest)
 	}
 	tokens := llama.Tokenize(b.vocab, prompt, true, true)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if len(tokens) == 0 || int64(len(tokens)) > math.MaxInt32 {
-		return fmt.Errorf("%w: пустой или слишком большой prompt", ErrInvalidRequest)
+		return fmt.Errorf("%w: запрос пуст или слишком велик", ErrInvalidRequest)
 	}
 	if uint64(len(tokens)) > uint64(b.contextSize) || uint64(options.MaxTokens) > uint64(b.contextSize)-uint64(len(tokens)) {
 		return ErrContextLimit
 	}
 	memory, err := llama.GetMemory(b.context)
 	if err != nil {
-		return fmt.Errorf("get model memory: %w", err)
+		return fmt.Errorf("получить память модели: %w", err)
 	}
 	if memory == 0 {
-		return fmt.Errorf("model memory is unavailable")
+		return fmt.Errorf("память модели недоступна")
 	}
 	if err := llama.MemoryClear(memory, true); err != nil {
-		return fmt.Errorf("clear model memory: %w", err)
+		return fmt.Errorf("очистить память модели: %w", err)
 	}
 	b.sampler = makeSampler(options)
 	if b.sampler == 0 {
-		return fmt.Errorf("initialize sampler: null handle")
+		return fmt.Errorf("создать семплер: пустой указатель")
 	}
 	b.pending = llama.TokenNull
 	b.position = int32(len(tokens))
@@ -231,7 +231,7 @@ func (b *nativeBackend) Begin(ctx context.Context, prompt string, options llm.Op
 	batch := llama.BatchInit(prefillBatchTokens, 0, 1)
 	if batch.Token == nil {
 		_ = llama.BatchFree(batch)
-		return fmt.Errorf("allocate prefill batch: null handle")
+		return fmt.Errorf("выделить пакет предварительной обработки: пустой указатель")
 	}
 	defer llama.BatchFree(batch)
 	for offset := 0; offset < len(tokens); offset += prefillBatchTokens {
@@ -246,7 +246,7 @@ func (b *nativeBackend) Begin(ctx context.Context, prompt string, options llm.Op
 		for i, token := range tokens[offset:end] {
 			pos := offset + i
 			if err := batch.Add(token, llama.Pos(pos), []llama.SeqId{0}, pos == len(tokens)-1); err != nil {
-				return fmt.Errorf("fill prefill batch: %w", err)
+				return fmt.Errorf("заполнить пакет предварительной обработки: %w", err)
 			}
 		}
 		if err := ctx.Err(); err != nil {
@@ -254,13 +254,13 @@ func (b *nativeBackend) Begin(ctx context.Context, prompt string, options llm.Op
 		}
 		status, err := llama.Decode(b.context, batch)
 		if err != nil {
-			return fmt.Errorf("decode prefill: %w", err)
+			return fmt.Errorf("декодировать входную часть запроса: %w", err)
 		}
 		if status != 0 {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			return fmt.Errorf("decode prefill returned code %d", status)
+			return fmt.Errorf("декодирование входной части запроса вернуло код %d", status)
 		}
 	}
 	return ctx.Err()
@@ -303,13 +303,13 @@ func (b *nativeBackend) Next(ctx context.Context) (tokenPiece, error) {
 		batch := llama.BatchGetOne([]llama.Token{b.pending})
 		status, err := llama.Decode(b.context, batch)
 		if err != nil {
-			return tokenPiece{}, fmt.Errorf("decode generated token: %w", err)
+			return tokenPiece{}, fmt.Errorf("декодировать сгенерированный токен: %w", err)
 		}
 		if status != 0 {
 			if err := ctx.Err(); err != nil {
 				return tokenPiece{}, err
 			}
-			return tokenPiece{}, fmt.Errorf("decode generated token returned code %d", status)
+			return tokenPiece{}, fmt.Errorf("декодирование сгенерированного токена вернуло код %d", status)
 		}
 		b.position++
 		b.pending = llama.TokenNull
@@ -319,10 +319,10 @@ func (b *nativeBackend) Next(ctx context.Context) (tokenPiece, error) {
 	}
 	token := llama.SamplerSample(b.sampler, b.context, -1)
 	if token == llama.TokenNull {
-		return tokenPiece{}, fmt.Errorf("sampler returned null token")
+		return tokenPiece{}, fmt.Errorf("семплер вернул пустой токен")
 	}
 	if token < 0 || token >= llama.Token(llama.VocabNTokens(b.vocab)) {
-		return tokenPiece{}, fmt.Errorf("%w: sampled token is outside the vocabulary", ErrInvalidOutput)
+		return tokenPiece{}, fmt.Errorf("%w: выбранный токен отсутствует в словаре", ErrInvalidOutput)
 	}
 	if llama.VocabIsEOG(b.vocab, token) {
 		return tokenPiece{End: true}, nil
@@ -342,13 +342,13 @@ func tokenToBytes(vocab llama.Vocab, token llama.Token) ([]byte, error) {
 		length := llama.TokenToPiece(vocab, token, buffer, 0, true)
 		if length >= 0 {
 			if int64(length) > int64(len(buffer)) {
-				return nil, fmt.Errorf("%w: token piece length out of range", ErrInvalidOutput)
+				return nil, fmt.Errorf("%w: длина части токена вне допустимого диапазона", ErrInvalidOutput)
 			}
 			return append([]byte(nil), buffer[:length]...), nil
 		}
 		needed := -int64(length)
 		if needed <= int64(len(buffer)) || needed > math.MaxInt32 {
-			return nil, fmt.Errorf("%w: invalid token piece size", ErrInvalidOutput)
+			return nil, fmt.Errorf("%w: неверный размер части токена", ErrInvalidOutput)
 		}
 		buffer = make([]byte, int(needed))
 	}
@@ -358,7 +358,7 @@ func (b *nativeBackend) End() error {
 	var result error
 	if b.context != 0 {
 		if err := llama.Synchronize(b.context); err != nil {
-			result = errors.Join(result, fmt.Errorf("synchronize context: %w", err))
+			result = errors.Join(result, fmt.Errorf("синхронизировать контекст: %w", err))
 		}
 	}
 	b.slot.Store(nil)
@@ -369,10 +369,10 @@ func (b *nativeBackend) End() error {
 	if b.context != 0 {
 		memory, err := llama.GetMemory(b.context)
 		if err != nil {
-			result = errors.Join(result, fmt.Errorf("get memory for clear: %w", err))
+			result = errors.Join(result, fmt.Errorf("получить память для очистки: %w", err))
 		} else if memory != 0 {
 			if err := llama.MemoryClear(memory, true); err != nil {
-				result = errors.Join(result, fmt.Errorf("clear request memory: %w", err))
+				result = errors.Join(result, fmt.Errorf("очистить память запроса: %w", err))
 			}
 		}
 	}
@@ -389,16 +389,16 @@ func (b *nativeBackend) Close() error {
 	var result error
 	if b.context != 0 {
 		if err := llama.Synchronize(b.context); err != nil {
-			result = errors.Join(result, fmt.Errorf("synchronize context: %w", err))
+			result = errors.Join(result, fmt.Errorf("синхронизировать контекст: %w", err))
 		}
 		if err := llama.Free(b.context); err != nil {
-			result = errors.Join(result, fmt.Errorf("free context: %w", err))
+			result = errors.Join(result, fmt.Errorf("освободить контекст: %w", err))
 		}
 		b.context = 0
 	}
 	if b.model != 0 {
 		if err := llama.ModelFree(b.model); err != nil {
-			result = errors.Join(result, fmt.Errorf("free model: %w", err))
+			result = errors.Join(result, fmt.Errorf("освободить модель: %w", err))
 		}
 		b.model = 0
 	}

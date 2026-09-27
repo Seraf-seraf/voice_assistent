@@ -66,7 +66,7 @@ func NewSegmenter(settings Settings) (*Segmenter, error) {
 
 func (s *Segmenter) Process(frame audio.Frame, activity Activity) ([]Event, error) {
 	if err := frame.Validate(s.settings.Format); err != nil {
-		return nil, fmt.Errorf("проверить audio frame: %w", err)
+		return nil, fmt.Errorf("проверить аудиокадр: %w", err)
 	}
 	if activity != Silence && activity != Speech {
 		return nil, fmt.Errorf("неизвестная активность %d", activity)
@@ -193,17 +193,17 @@ func (s *Segmenter) resetRecording() {
 
 func validateSettings(settings Settings) error {
 	if err := settings.Format.Validate(); err != nil {
-		return fmt.Errorf("audio format: %w", err)
+		return fmt.Errorf("формат аудио: %w", err)
 	}
 	frameDuration := settings.Format.FrameDuration
 	if frameDuration != 10*time.Millisecond && frameDuration != 20*time.Millisecond && frameDuration != 30*time.Millisecond {
-		return errors.New("VAD поддерживает frame duration 10, 20 или 30 ms")
+		return errors.New("VAD поддерживает длительность кадра 10, 20 или 30 мс")
 	}
 	if settings.PreRoll < 0 || settings.MinSpeech <= 0 || settings.EndSilence <= 0 || settings.MaxUtterance <= 0 {
 		return errors.New("интервалы VAD некорректны")
 	}
 	if settings.MaxUtterance <= settings.MinSpeech {
-		return errors.New("max utterance должен быть больше minimum speech")
+		return errors.New("максимальная длина реплики должна превышать минимальную длительность речи")
 	}
 	return nil
 }

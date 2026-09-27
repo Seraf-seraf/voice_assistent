@@ -33,7 +33,7 @@ type Normalizer struct {
 
 func NewNormalizer(options Options) (*Normalizer, error) {
 	if options.MinSignificantRunes <= 0 {
-		return nil, errors.New("minimum significant runes должен быть положительным")
+		return nil, errors.New("минимальное число значимых рун должно быть положительным")
 	}
 	normalizer := &Normalizer{
 		minSignificantRunes: options.MinSignificantRunes,
@@ -43,14 +43,14 @@ func NewNormalizer(options Options) (*Normalizer, error) {
 	for _, value := range options.IgnoredExact {
 		canonical := Canonicalize(value)
 		if canonical == "" {
-			return nil, errors.New("ignored exact phrase не может быть пустой")
+			return nil, errors.New("точная фраза для игнорирования не может быть пустой")
 		}
 		normalizer.ignoredExact[canonical] = struct{}{}
 	}
 	for _, pattern := range options.IgnoredPatterns {
 		compiled, err := regexp.Compile(pattern)
 		if err != nil {
-			return nil, fmt.Errorf("скомпилировать ignored pattern %q: %w", pattern, err)
+			return nil, fmt.Errorf("скомпилировать шаблон для игнорирования %q: %w", pattern, err)
 		}
 		normalizer.ignoredPatterns = append(normalizer.ignoredPatterns, compiled)
 	}

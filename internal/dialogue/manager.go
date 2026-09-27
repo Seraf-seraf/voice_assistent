@@ -8,10 +8,10 @@ import (
 )
 
 var (
-	ErrTurnActive   = errors.New("предыдущий dialogue turn ещё активен")
-	ErrNoActiveTurn = errors.New("активный dialogue turn отсутствует")
-	ErrTurnMismatch = errors.New("dialogue turn ID не совпадает")
-	ErrEmptyMessage = errors.New("dialogue message не может быть пустым")
+	ErrTurnActive   = errors.New("предыдущий ход диалога ещё активен")
+	ErrNoActiveTurn = errors.New("активный ход диалога отсутствует")
+	ErrTurnMismatch = errors.New("идентификатор хода диалога не совпадает")
+	ErrEmptyMessage = errors.New("сообщение диалога не может быть пустым")
 )
 
 type Role string
@@ -52,13 +52,13 @@ func New(options Options) (*Manager, error) {
 	options.SystemPrompt = strings.TrimSpace(options.SystemPrompt)
 	options.ResponsePolicy = strings.TrimSpace(options.ResponsePolicy)
 	if options.SystemPrompt == "" {
-		return nil, errors.New("system prompt обязателен")
+		return nil, errors.New("системный запрос обязателен")
 	}
 	if options.ResponsePolicy == "" {
-		return nil, errors.New("response policy обязательна")
+		return nil, errors.New("политика ответа обязательна")
 	}
 	if options.MaxHistoryMessages < 2 {
-		return nil, errors.New("max history messages должен быть не меньше 2")
+		return nil, errors.New("история должна содержать не менее двух сообщений")
 	}
 	return &Manager{options: options}, nil
 }

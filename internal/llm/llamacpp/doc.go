@@ -1,3 +1,4 @@
-// Package llamacpp adapts a locally loaded llama.cpp model to the application
-// generator port. Native libraries and model files are owned by Generator.
+// Package llamacpp адаптирует локально загруженную модель llama.cpp к порту
+// генератора приложения. Нативные библиотеки и файлы модели принадлежат
+// Generator.
 package llamacpp

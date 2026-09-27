@@ -73,23 +73,23 @@ var commands = map[string]Command{
 
 func New(options Options) (*Router, error) {
 	if options.Mode != ModeAlways && options.Mode != ModePTT && options.Mode != ModeWake {
-		return nil, fmt.Errorf("неизвестный activation mode %d", options.Mode)
+		return nil, fmt.Errorf("неизвестный режим активации %d", options.Mode)
 	}
 	router := &Router{mode: options.Mode, wakeWindow: options.WakeWindow}
 	if options.Mode != ModeWake {
 		return router, nil
 	}
 	if options.WakeWindow <= 0 {
-		return nil, errors.New("wake window должен быть положительным")
+		return nil, errors.New("окно активации должно быть положительным")
 	}
 	if len(options.WakePhrases) == 0 {
-		return nil, errors.New("нужна хотя бы одна wake phrase")
+		return nil, errors.New("нужна хотя бы одна фраза активации")
 	}
 	seen := make(map[string]struct{}, len(options.WakePhrases))
 	for _, phrase := range options.WakePhrases {
 		canonical := transcript.Canonicalize(phrase)
 		if canonical == "" {
-			return nil, errors.New("wake phrase не может быть пустой")
+			return nil, errors.New("фраза активации не может быть пустой")
 		}
 		if _, exists := seen[canonical]; exists {
 			continue
@@ -114,7 +114,7 @@ func ParseMode(value string) (Mode, error) {
 	case "wake":
 		return ModeWake, nil
 	default:
-		return 0, fmt.Errorf("неизвестный activation mode %q", value)
+		return 0, fmt.Errorf("неизвестный режим активации %q", value)
 	}
 }
 
