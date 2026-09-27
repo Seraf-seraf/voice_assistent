@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -128,7 +129,13 @@ func (p *Player) Play(ctx context.Context, pcm audio.PCM) error {
 		if written > 0 {
 			offset += written
 		}
-		retryableWriteErr := errors.Is(writeErr, syscall.EAGAIN) || errors.Is(writeErr, syscall.EINTR)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			if writeErr == nil || writeErr == syscall.EINTR || sameErrorValue(writeErr, ctxErr) {
+				return fail(ctxErr)
+			}
+			return fail(errors.Join(writeErr, ctxErr))
+		}
+		retryableWriteErr := writeErr == syscall.EAGAIN || writeErr == syscall.EINTR
 		if !started && offset >= prefillFrames && written > 0 && (writeErr == nil || retryableWriteErr) {
 			if err := ctx.Err(); err != nil {
 				return fail(err)
@@ -141,13 +148,13 @@ func (p *Player) Play(ctx context.Context, pcm audio.PCM) error {
 		if writeErr == nil && written > 0 {
 			continue
 		}
-		if errors.Is(writeErr, syscall.EINTR) {
-			if err := ctx.Err(); err != nil {
-				return fail(errors.Join(writeErr, err))
+		if writeErr == syscall.EINTR {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return fail(ctxErr)
 			}
 			continue
 		}
-		if writeErr != nil && !errors.Is(writeErr, syscall.EAGAIN) {
+		if writeErr != nil && writeErr != syscall.EAGAIN {
 			return fail(fmt.Errorf("записать ALSA PCM: %w", writeErr))
 		}
 		if err := ctx.Err(); err != nil {
@@ -155,9 +162,12 @@ func (p *Player) Play(ctx context.Context, pcm audio.PCM) error {
 		}
 		if err := p.device.Wait(ctx, deviceWaitInterval); err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
+				if err == syscall.EINTR || sameErrorValue(err, ctxErr) {
+					return fail(ctxErr)
+				}
 				return fail(errors.Join(err, ctxErr))
 			}
-			if errors.Is(err, syscall.EINTR) {
+			if err == syscall.EINTR {
 				continue
 			}
 			return fail(fmt.Errorf("ожидать готовность ALSA PCM: %w", err))
@@ -195,6 +205,14 @@ func (p *Player) Play(ctx context.Context, pcm audio.PCM) error {
 		case <-timer.C:
 		}
 	}
+}
+
+func sameErrorValue(err, cause error) bool {
+	errType := reflect.TypeOf(err)
+	if errType == nil || errType != reflect.TypeOf(cause) || !errType.Comparable() {
+		return false
+	}
+	return err == cause
 }
 
 func (p *Player) Close() error {

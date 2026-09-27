@@ -169,7 +169,7 @@ func (g *Generator) Generate(ctx context.Context, request llm.Request, emit llm.
 		piece, err := g.backend.Next(requestCtx)
 		if err != nil {
 			if ctxErr := requestCtx.Err(); ctxErr != nil {
-				return ctxErr
+				return fmt.Errorf("получить нативный токен: %w", errors.Join(err, ctxErr))
 			}
 			return fmt.Errorf("получить нативный токен: %w", err)
 		}

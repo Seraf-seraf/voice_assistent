@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -35,23 +36,69 @@ func TestSelectedALSADevicePlayback(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	writeGate := &playbackWriteGate{pcmDevice: player.device, written: make(chan struct{}), release: make(chan struct{})}
+	player.device = writeGate
 	playDone := make(chan error, 1)
-	started := make(chan struct{})
 	longPCM := lowLevelSignal(22050 * 5)
-	go func() {
-		close(started)
-		playDone <- player.Play(ctx, longPCM)
+	go func() { playDone <- player.Play(ctx, longPCM) }()
+	doneObserved := false
+	var releaseOnce sync.Once
+	defer func() {
+		releaseOnce.Do(func() { close(writeGate.release) })
+		if !doneObserved {
+			<-playDone
+		}
 	}()
-	<-started
+	select {
+	case <-writeGate.written:
+	case err := <-playDone:
+		doneObserved = true
+		t.Fatalf("Play завершился до первой записи PCM: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("нативная запись ALSA не достигла тестового барьера")
+	}
 	cancel()
+	releaseOnce.Do(func() { close(writeGate.release) })
 	select {
 	case err := <-playDone:
+		doneObserved = true
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("отменённый Play вернул %v", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Play не завершился после отмены")
 	}
+	if writeGate.dropCount != 1 {
+		t.Fatalf("Drop вызван %d раз, ожидался один", writeGate.dropCount)
+	}
+	if err := player.Play(context.Background(), pcm); err != nil {
+		t.Fatalf("повторный Play на том же устройстве: %v", err)
+	}
+}
+
+type playbackWriteGate struct {
+	pcmDevice
+	written   chan struct{}
+	release   chan struct{}
+	once      sync.Once
+	dropCount int
+}
+
+func (d *playbackWriteGate) Write(samples []float32) (int, error) {
+	written, err := d.pcmDevice.Write(samples)
+	if written > 0 {
+		d.once.Do(func() {
+			close(d.written)
+			<-d.release
+		})
+	}
+	return written, err
+}
+
+func (d *playbackWriteGate) Drop() error {
+	d.dropCount++
+	return d.pcmDevice.Drop()
 }
 
 func lowLevelSignal(samples int) audio.PCM {

@@ -32,6 +32,7 @@ type fakeTokenBackend struct {
 	beginContext context.Context
 	blockNext    chan struct{}
 	nextEntered  chan struct{}
+	nextHook     func(context.Context) (tokenPiece, error)
 }
 
 func (b *fakeTokenBackend) Template() string { return b.template }
@@ -52,6 +53,9 @@ func (b *fakeTokenBackend) Next(ctx context.Context) (tokenPiece, error) {
 	if b.nextEntered != nil && index == 0 {
 		close(b.nextEntered)
 	}
+	if b.nextHook != nil && index == 0 {
+		return b.nextHook(ctx)
+	}
 	if b.blockNext != nil && index == 0 {
 		select {
 		case <-b.blockNext:
@@ -66,6 +70,27 @@ func (b *fakeTokenBackend) Next(ctx context.Context) (tokenPiece, error) {
 		return tokenPiece{End: true}, nil
 	}
 	return b.pieces[index], nil
+}
+
+func TestGenerateKeepsNativeErrorReturnedWithCancellation(t *testing.T) {
+	sentinel := errors.New("ошибка нативного next")
+	backend := &fakeTokenBackend{
+		template: "{{ messages[0].content }}",
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	backend.nextHook = func(context.Context) (tokenPiece, error) {
+		cancel()
+		return tokenPiece{}, sentinel
+	}
+	generator, _ := newGenerator(backend, time.Second)
+	emits := 0
+	err := generator.Generate(ctx, llm.Request{Dialogue: validSnapshot(), Options: validLLMOptions()}, func(llm.TextDelta) error {
+		emits++
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, sentinel) || emits != 0 || backend.endCount != 1 {
+		t.Fatalf("ошибка Generate=%v, дельт=%d, End=%d", err, emits, backend.endCount)
+	}
 }
 func (b *fakeTokenBackend) End() error {
 	b.mu.Lock()
@@ -199,14 +224,14 @@ func TestNewGeneratorRejectsNilBackendAndInvalidTimeout(t *testing.T) {
 }
 
 func TestGenerateStopsOnEmitErrorAndEndsPartialBegin(t *testing.T) {
-	sentinel := errors.New("emit failed")
+	sentinel := errors.New("ошибка передачи дельты")
 	backend := &fakeTokenBackend{template: "{{ messages[0].content }}", pieces: []tokenPiece{{Bytes: []byte("one")}, {Bytes: []byte("two")}}}
 	generator, _ := newGenerator(backend, time.Second)
 	err := generator.Generate(context.Background(), llm.Request{Dialogue: validSnapshot(), Options: validLLMOptions()}, func(llm.TextDelta) error { return sentinel })
 	if !errors.Is(err, sentinel) || backend.nextCount != 1 || backend.endCount != 1 {
 		t.Fatalf("Generate()=%v next=%d end=%d", err, backend.nextCount, backend.endCount)
 	}
-	beginFailure := errors.New("partial Begin failure")
+	beginFailure := errors.New("частичная ошибка запуска генерации")
 	backend = &fakeTokenBackend{template: "{{ messages[0].content }}", beginErr: beginFailure}
 	generator, _ = newGenerator(backend, time.Second)
 	err = generator.Generate(context.Background(), llm.Request{Dialogue: validSnapshot(), Options: validLLMOptions()}, func(llm.TextDelta) error { return nil })
@@ -225,7 +250,7 @@ func TestGenerateMaxTokensLimitsNextCalls(t *testing.T) {
 }
 
 func TestGenerateErrorsPreserveCauseAndEndCleanup(t *testing.T) {
-	generateErr, endErr := errors.New("native error"), errors.New("end error")
+	generateErr, endErr := errors.New("ошибка нативной генерации"), errors.New("ошибка завершения генерации")
 	backend := &fakeTokenBackend{template: "{{ messages[0].content }}", pieces: []tokenPiece{{Bytes: []byte("partial")}}, nextErr: generateErr, endErr: endErr}
 	generator, _ := newGenerator(backend, time.Second)
 	err := generator.Generate(context.Background(), llm.Request{Dialogue: validSnapshot(), Options: validLLMOptions()}, func(llm.TextDelta) error { return nil })

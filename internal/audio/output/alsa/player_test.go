@@ -28,11 +28,16 @@ type fakePCMDevice struct {
 	prepareCount     int
 	startCount       int
 	startAfterFrames int
+	writeHook        func()
+	waitHook         func()
 	dropCount        int
 	drainCount       int
 }
 
 func (d *fakePCMDevice) Write(samples []float32) (int, error) {
+	if d.writeHook != nil {
+		d.writeHook()
+	}
 	n := len(samples)
 	if len(d.writes) > 0 {
 		n = d.writes[0]
@@ -53,6 +58,9 @@ func (d *fakePCMDevice) Write(samples []float32) (int, error) {
 }
 
 func (d *fakePCMDevice) Wait(ctx context.Context, _ time.Duration) error {
+	if d.waitHook != nil {
+		d.waitHook()
+	}
 	if d.waitEntered != nil {
 		select {
 		case d.waitEntered <- struct{}{}:
@@ -67,6 +75,78 @@ func (d *fakePCMDevice) Wait(ctx context.Context, _ time.Duration) error {
 	}
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+func TestPlayerCancellationRemovesOnlyPureInterruptedWaitErrors(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		write     bool
+		deviceErr error
+	}{
+		{name: "запись EINTR", write: true, deviceErr: syscall.EINTR},
+		{name: "ожидание EINTR", deviceErr: syscall.EINTR},
+		{name: "ожидание той же отмены", deviceErr: context.Canceled},
+		{name: "запись с независимой ошибкой", write: true, deviceErr: errors.New("ошибка записи")},
+		{name: "ожидание с независимой ошибкой", deviceErr: errors.New("ошибка ожидания")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			device := &fakePCMDevice{}
+			if test.write {
+				device.writeErrors = []error{test.deviceErr}
+				device.writeHook = cancel
+			} else {
+				device.writes = []int{0}
+				device.writeErrors = []error{syscall.EAGAIN}
+				device.waitErr = test.deviceErr
+				device.waitHook = cancel
+			}
+			player := newPlayer(device, 22050)
+			err := player.Play(ctx, audio.PCM{Samples: []float32{0.1}, SampleRate: 22050})
+			cancel()
+			if !errors.Is(err, context.Canceled) || device.dropCount != 1 {
+				t.Fatalf("Play()=%v, сброс=%d", err, device.dropCount)
+			}
+			if test.deviceErr != syscall.EINTR && !errors.Is(err, test.deviceErr) {
+				t.Fatalf("потеряна ошибка устройства %v: %v", test.deviceErr, err)
+			}
+			device.writeHook = nil
+			device.waitHook = nil
+			device.waitErr = nil
+			device.writes = nil
+			device.writeErrors = nil
+			if err := player.Play(context.Background(), audio.PCM{Samples: []float32{0.2}, SampleRate: 22050}); err != nil {
+				t.Fatalf("повторное воспроизведение на том же Player: %v", err)
+			}
+		})
+	}
+	dropErr := errors.New("ошибка сброса")
+	ctx, cancel := context.WithCancel(context.Background())
+	device := &fakePCMDevice{writeErrors: []error{syscall.EINTR}, writeHook: cancel, dropErr: dropErr}
+	err := newPlayer(device, 22050).Play(ctx, audio.PCM{Samples: []float32{0.1}, SampleRate: 22050})
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, dropErr) {
+		t.Fatalf("отмена потеряла ошибку сброса: %v", err)
+	}
+}
+
+func TestPlayerCancellationKeepsCompositeEINTRFailure(t *testing.T) {
+	sentinel := errors.New("ошибка устройства")
+	ctx, cancel := context.WithCancel(context.Background())
+	device := &fakePCMDevice{writeErrors: []error{errors.Join(syscall.EINTR, sentinel)}, writeHook: cancel}
+	err := newPlayer(device, 22050).Play(ctx, audio.PCM{Samples: []float32{0.1}, SampleRate: 22050})
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, sentinel) || device.dropCount != 1 {
+		t.Fatalf("составная ошибка записи потеряна: %v, сброс=%d", err, device.dropCount)
+	}
+
+	ctx, cancel = context.WithCancel(context.Background())
+	waitDevice := &fakePCMDevice{
+		writes: []int{0}, writeErrors: []error{syscall.EAGAIN},
+		waitErr: errors.Join(syscall.EINTR, sentinel), waitHook: cancel,
+	}
+	err = newPlayer(waitDevice, 22050).Play(ctx, audio.PCM{Samples: []float32{0.1}, SampleRate: 22050})
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, sentinel) || waitDevice.dropCount != 1 {
+		t.Fatalf("составная ошибка ожидания потеряна: %v, сброс=%d", err, waitDevice.dropCount)
+	}
 }
 
 func (d *fakePCMDevice) Drain() error {
@@ -164,8 +244,8 @@ func TestPlayerPlayPreservesSequenceAcrossShortWrites(t *testing.T) {
 }
 
 func TestPlayerPlayDropsAfterWriteAndKeepsCleanupError(t *testing.T) {
-	writeErr := errors.New("write failed")
-	dropErr := errors.New("drop failed")
+	writeErr := errors.New("ошибка записи")
+	dropErr := errors.New("ошибка сброса")
 	device := &fakePCMDevice{writeErrors: []error{writeErr}, dropErr: dropErr}
 	player := newPlayer(device, 22050)
 	err := player.Play(context.Background(), audio.PCM{Samples: []float32{0.5}, SampleRate: 22050})
