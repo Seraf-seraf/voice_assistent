@@ -2,7 +2,7 @@ module github.com/Seraf-seraf/voice_assistent
 
 go 1.26.0
 
-toolchain go1.26.8
+toolchain go1.27.1
 
 require (
 	github.com/gen2brain/malgo v0.11.25

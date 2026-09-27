@@ -4,7 +4,7 @@ Production adapter загружает модель один раз при зап
 нейтральный `llm.Generator`. Для LLM не запускаются HTTP-сервис или subprocess.
 Микрофонный тракт вызывает STT/Whisper через существующий HTTP adapter.
 
-Закреплённые версии: Go toolchain `go1.26.8`, YZMA `v1.28.0`, native
+Закреплённые версии: Go toolchain `go1.27.1`, YZMA `v1.28.0`, native
 llama.cpp `v0.5.0`. Рабочий профиль: amd64, CUDA 12, context 4096, 99 GPU
 layers, 4 threads, timeout генерации 30s. Автоматического CPU fallback нет.
 
@@ -38,7 +38,7 @@ Windows путь для Windows процесса:
 Из корня репозитория:
 
 ```bash
-export GOTOOLCHAIN=go1.26.8
+export GOTOOLCHAIN=go1.27.1
 export ASSISTANT_LLM_MODEL='/home/seraf/.lmstudio/models/lmstudio-community/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q4_K_M.gguf'
 export ASSISTANT_LLM_LIBRARY_DIR="$PWD/.native/llama-v0.5.0/linux-amd64-cuda12"
 
@@ -62,7 +62,7 @@ make test-native
 Используйте Windows native bundle и Windows Go процесс:
 
 ```powershell
-$env:GOTOOLCHAIN = 'go1.26.8'
+$env:GOTOOLCHAIN = 'go1.27.1'
 $env:ASSISTANT_LLM_MODEL = '\\wsl.localhost\Ubuntu\home\seraf\.lmstudio\models\lmstudio-community\Qwen3.5-0.8B-GGUF\Qwen3.5-0.8B-Q4_K_M.gguf'
 $env:ASSISTANT_LLM_LIBRARY_DIR = Join-Path $PWD '.native\llama-v0.5.0\windows-amd64-cuda12'
 

@@ -7,7 +7,7 @@
 
 ## Требования
 
-- Go 1.26.8 (toolchain задаётся в `go.mod`);
+- Go 1.27.1 (toolchain задаётся в `go.mod`; минимальная версия модуля — Go 1.26.0);
 - CGO и GCC-compatible C compiler для сборки аудиовхода через miniaudio;
 - CGO для глобальной hold-PTT клавиши в Windows;
 - локальная GGUF-модель Qwen3.5-0.8B и native llama.cpp библиотеки для целевой ОС;
