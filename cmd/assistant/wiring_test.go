@@ -94,6 +94,7 @@ type wiringSTTClient struct {
 type recordingGenerator struct {
 	requests    []llm.Request
 	generateErr error
+	output      *bytes.Buffer
 }
 
 func (g *recordingGenerator) Generate(_ context.Context, request llm.Request, emit llm.Emit) error {
@@ -101,7 +102,22 @@ func (g *recordingGenerator) Generate(_ context.Context, request llm.Request, em
 	if g.generateErr != nil {
 		return g.generateErr
 	}
-	return emit(llm.TextDelta{Text: "Ответ " + strconv.Itoa(len(g.requests))})
+	answer := "Ответ " + strconv.Itoa(len(g.requests))
+	if err := emit(llm.TextDelta{Text: "Ответ"}); err != nil {
+		return err
+	}
+	if g.output != nil {
+		if !strings.HasSuffix(g.output.String(), "Ассистент: Ответ") {
+			return errors.New("first response delta was not written during Generate")
+		}
+	}
+	if err := emit(llm.TextDelta{Text: " " + strings.TrimPrefix(answer, "Ответ ")}); err != nil {
+		return err
+	}
+	if g.output != nil && !strings.HasSuffix(g.output.String(), "Ассистент: "+answer) {
+		return errors.New("second response delta was not written during Generate")
+	}
+	return nil
 }
 
 func (c wiringSTTClient) Transcribe(context.Context, audio.Utterance) (stt.Transcript, error) {
@@ -172,12 +188,12 @@ func TestTranscriberInputProcessorResponderAndOutputShareDialogueLifecycle(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	responseHandler, err := newResponseHandler(&output)
+	responseOutput, err := newResponseOutput(&output)
 	if err != nil {
 		t.Fatal(err)
 	}
-	generator := &recordingGenerator{}
-	responder, err := assistant.NewResponder(manager, generator, options, responseHandler)
+	generator := &recordingGenerator{output: &output}
+	responder, err := assistant.NewResponder(manager, generator, options, responseOutput)
 	if err != nil {
 		t.Fatal(err)
 	}

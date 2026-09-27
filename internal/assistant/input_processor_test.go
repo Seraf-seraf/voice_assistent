@@ -206,7 +206,7 @@ func TestInputProcessorWithResponderCompletesSequentialDialogueTurns(t *testing.
 		requests = append(requests, request)
 		return emit(llm.TextDelta{Text: "ответ"})
 	}}
-	responder, err := NewResponder(manager, generator, llm.Options{Temperature: 0.4, MaxTokens: 20}, func(context.Context, Response) error { return nil })
+	responder, err := NewResponder(manager, generator, llm.Options{Temperature: 0.4, MaxTokens: 20}, &recordingResponseSink{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestInputProcessorWithResponderRemovesWakePrefixButPreservesOriginalText(t 
 	responder, err := NewResponder(manager, fakeGenerator{generate: func(_ context.Context, got llm.Request, emit llm.Emit) error {
 		request = got
 		return emit(llm.TextDelta{Text: "готово"})
-	}}, llm.Options{Temperature: 0.4, MaxTokens: 20}, func(context.Context, Response) error { return nil })
+	}}, llm.Options{Temperature: 0.4, MaxTokens: 20}, &recordingResponseSink{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +270,7 @@ func TestInputProcessorResetAndFiltersBeforeResponder(t *testing.T) {
 	responder, err := NewResponder(manager, fakeGenerator{generate: func(_ context.Context, request llm.Request, emit llm.Emit) error {
 		requests = append(requests, request)
 		return emit(llm.TextDelta{Text: "ответ"})
-	}}, llm.Options{Temperature: 0.4, MaxTokens: 20}, func(context.Context, Response) error { return nil })
+	}}, llm.Options{Temperature: 0.4, MaxTokens: 20}, &recordingResponseSink{})
 	if err != nil {
 		t.Fatal(err)
 	}

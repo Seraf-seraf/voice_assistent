@@ -60,9 +60,9 @@ func run(ctx context.Context) (resultErr error) {
 	if err != nil {
 		return fmt.Errorf("проверить параметры генерации: %w", err)
 	}
-	responseHandler, err := newResponseHandler(os.Stdout)
+	responseOutput, err := newResponseOutput(os.Stdout)
 	if err != nil {
-		return fmt.Errorf("создать response handler: %w", err)
+		return fmt.Errorf("создать response output: %w", err)
 	}
 	sttClient, err := newSTTClient(cfg.STT)
 	if err != nil {
@@ -77,7 +77,7 @@ func run(ctx context.Context) (resultErr error) {
 			resultErr = errors.Join(resultErr, fmt.Errorf("закрыть локальную LLM: %w", err))
 		}
 	}()
-	responder, err := assistant.NewResponder(manager, generator, generationOptions, responseHandler)
+	responder, err := assistant.NewResponder(manager, generator, generationOptions, responseOutput)
 	if err != nil {
 		return fmt.Errorf("создать responder: %w", err)
 	}

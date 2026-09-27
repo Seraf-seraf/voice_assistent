@@ -103,11 +103,8 @@ func TestNativeModelLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var accepted []assistant.Response
-	responder, err := assistant.NewResponder(manager, generator, options, func(_ context.Context, response assistant.Response) error {
-		accepted = append(accepted, response)
-		return nil
-	})
+	accepted := &integrationResponseSink{}
+	responder, err := assistant.NewResponder(manager, generator, options, accepted)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,8 +113,8 @@ func TestNativeModelLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(accepted) != 2 || len(manager.Snapshot().Messages) != 4 || manager.Snapshot().Messages[3].Role != dialogue.RoleAssistant {
-		t.Fatalf("accepted=%d history=%+v", len(accepted), manager.Snapshot().Messages)
+	if len(accepted.responses) != 2 || accepted.aborts != 0 || len(manager.Snapshot().Messages) != 4 || manager.Snapshot().Messages[3].Role != dialogue.RoleAssistant {
+		t.Fatalf("accepted=%d aborts=%d history=%+v", len(accepted.responses), accepted.aborts, manager.Snapshot().Messages)
 	}
 
 	if err := generator.Close(); err != nil {
@@ -133,6 +130,31 @@ func TestNativeModelLifecycle(t *testing.T) {
 	if after := modelHash(t, modelPath); after != before {
 		t.Fatalf("model changed during test: before=%s after=%s", before, after)
 	}
+}
+
+type integrationResponseSink struct {
+	responses []assistant.Response
+	current   strings.Builder
+	aborts    int
+}
+
+func (s *integrationResponseSink) Push(_ context.Context, delta assistant.ResponseDelta) error {
+	_, err := s.current.WriteString(delta.Text)
+	return err
+}
+
+func (s *integrationResponseSink) Complete(_ context.Context, response assistant.Response) error {
+	if got := s.current.String(); got != response.Text {
+		return fmt.Errorf("streamed response %q differs from complete response %q", got, response.Text)
+	}
+	s.responses = append(s.responses, response)
+	s.current.Reset()
+	return nil
+}
+
+func (s *integrationResponseSink) Abort(context.Context, assistant.ResponseAbort) error {
+	s.aborts++
+	return errors.New("unexpected response abort")
 }
 
 func generateText(t *testing.T, ctx context.Context, generator llm.Generator, request llm.Request) string {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +18,51 @@ type fakeGenerator struct {
 
 func (g fakeGenerator) Generate(ctx context.Context, request llm.Request, emit llm.Emit) error {
 	return g.generate(ctx, request, emit)
+}
+
+type recordingResponseSink struct {
+	pushes        []ResponseDelta
+	completes     []Response
+	aborts        []ResponseAbort
+	abortContexts []context.Context
+	pushFunc      func(context.Context, ResponseDelta) error
+	completeFunc  func(context.Context, Response) error
+	abortFunc     func(context.Context, ResponseAbort) error
+}
+
+func (s *recordingResponseSink) Push(ctx context.Context, delta ResponseDelta) error {
+	s.pushes = append(s.pushes, delta)
+	if s.pushFunc != nil {
+		return s.pushFunc(ctx, delta)
+	}
+	return nil
+}
+
+func (s *recordingResponseSink) Complete(ctx context.Context, response Response) error {
+	s.completes = append(s.completes, response)
+	if s.completeFunc != nil {
+		return s.completeFunc(ctx, response)
+	}
+	return nil
+}
+
+func (s *recordingResponseSink) Abort(ctx context.Context, abort ResponseAbort) error {
+	s.aborts = append(s.aborts, abort)
+	s.abortContexts = append(s.abortContexts, ctx)
+	if s.abortFunc != nil {
+		return s.abortFunc(ctx, abort)
+	}
+	return nil
+}
+
+func newResponderWithComplete(t *testing.T, manager *dialogue.Manager, generator llm.Generator, options llm.Options, complete func(context.Context, Response) error) (*Responder, *recordingResponseSink) {
+	t.Helper()
+	sink := &recordingResponseSink{completeFunc: complete}
+	responder, err := NewResponder(manager, generator, options, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return responder, sink
 }
 
 func newResponderTestManager(t *testing.T) *dialogue.Manager {
@@ -41,31 +87,32 @@ func TestResponderPassesSnapshotOptionsAndCollectsTextDeltas(t *testing.T) {
 	}
 	wantOptions := llm.Options{Temperature: 0.4, MaxTokens: 512}
 	var request llm.Request
-	responseCalls := 0
 	insideGenerate := false
+	var sink *recordingResponseSink
 	generator := fakeGenerator{generate: func(_ context.Context, got llm.Request, emit llm.Emit) error {
 		insideGenerate = true
 		request = got
-		for _, fragment := range []string{" При", "вет, ", "мир! "} {
+		for index, fragment := range []string{" При", "вет, ", "мир! "} {
 			if err := emit(llm.TextDelta{Text: fragment}); err != nil {
 				return err
 			}
-			if responseCalls != 0 {
-				t.Fatal("ResponseHandler called before Generate returned")
+			if got, want := len(sink.pushes), index+1; got != want {
+				t.Fatalf("sink pushes during Generate = %d, want %d", got, want)
+			}
+			if len(sink.completes) != 0 {
+				t.Fatal("sink Complete called before Generate returned")
 			}
 		}
 		insideGenerate = false
 		return nil
 	}}
-	var response Response
-	responder, err := NewResponder(manager, generator, wantOptions, func(_ context.Context, got Response) error {
+	sink = &recordingResponseSink{completeFunc: func(_ context.Context, got Response) error {
 		if insideGenerate {
-			t.Fatal("ResponseHandler called during Generate")
+			t.Fatal("sink Complete called during Generate")
 		}
-		responseCalls++
-		response = got
 		return nil
-	})
+	}}
+	responder, err := NewResponder(manager, generator, wantOptions, sink)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,11 +132,11 @@ func TestResponderPassesSnapshotOptionsAndCollectsTextDeltas(t *testing.T) {
 		t.Fatalf("request options = %+v, want %+v", request.Options, wantOptions)
 	}
 	wantResponse := Response{UtteranceID: 42, TurnID: 2, Text: "Привет, мир!"}
-	if response != wantResponse {
-		t.Fatalf("response = %+v, want %+v", response, wantResponse)
+	if len(sink.completes) != 1 || sink.completes[0] != wantResponse {
+		t.Fatalf("sink completions = %+v, want [%+v]", sink.completes, wantResponse)
 	}
-	if responseCalls != 1 {
-		t.Fatalf("ResponseHandler calls = %d, want 1", responseCalls)
+	if len(sink.aborts) != 0 {
+		t.Fatalf("sink Abort calls = %d, want 0", len(sink.aborts))
 	}
 	wantHistory := append(wantMessages, dialogue.Message{Role: dialogue.RoleAssistant, Content: "Привет, мир!"})
 	if !reflect.DeepEqual(manager.Snapshot().Messages, wantHistory) {
@@ -97,10 +144,74 @@ func TestResponderPassesSnapshotOptionsAndCollectsTextDeltas(t *testing.T) {
 	}
 }
 
+func TestResponderStreamsTrimmedWhitespaceAndStoresSameText(t *testing.T) {
+	manager := newResponderTestManager(t)
+	generator := fakeGenerator{generate: func(_ context.Context, _ llm.Request, emit llm.Emit) error {
+		for _, fragment := range []string{"  При", "вет", ", ", "мир! ", "  "} {
+			if err := emit(llm.TextDelta{Text: fragment}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}}
+	responder, sink := newResponderWithComplete(t, manager, generator, llm.Options{Temperature: 0.4, MaxTokens: 20}, nil)
+	if err := responder.Handle(context.Background(), Query{UtteranceID: 42, Text: "вопрос"}); err != nil {
+		t.Fatal(err)
+	}
+	var streamed strings.Builder
+	for _, delta := range sink.pushes {
+		_, _ = streamed.WriteString(delta.Text)
+	}
+	if got, want := streamed.String(), "Привет, мир!"; got != want {
+		t.Fatalf("streamed text=%q want=%q", got, want)
+	}
+	wantResponse := Response{UtteranceID: 42, TurnID: 1, Text: "Привет, мир!"}
+	if len(sink.completes) != 1 || sink.completes[0] != wantResponse {
+		t.Fatalf("completes=%+v want=[%+v]", sink.completes, wantResponse)
+	}
+	wantHistory := []dialogue.Message{{Role: dialogue.RoleUser, Content: "вопрос"}, {Role: dialogue.RoleAssistant, Content: "Привет, мир!"}}
+	if !reflect.DeepEqual(manager.Snapshot().Messages, wantHistory) {
+		t.Fatalf("history=%+v want=%+v", manager.Snapshot().Messages, wantHistory)
+	}
+}
+
+func TestResponderBuffersOnlyTrailingWhitespaceUntilNextText(t *testing.T) {
+	manager := newResponderTestManager(t)
+	var sink *recordingResponseSink
+	generator := fakeGenerator{generate: func(_ context.Context, _ llm.Request, emit llm.Emit) error {
+		for index, fragment := range []string{"текст", " \t", "между", "  "} {
+			if err := emit(llm.TextDelta{Text: fragment}); err != nil {
+				return err
+			}
+			if index == 1 && (len(sink.pushes) != 1 || sink.pushes[0].Text != "текст") {
+				t.Fatalf("pending whitespace was emitted too early: %+v", sink.pushes)
+			}
+			if index == 2 && (len(sink.pushes) != 2 || sink.pushes[1].Text != " \tмежду") {
+				t.Fatalf("internal whitespace not preserved: %+v", sink.pushes)
+			}
+		}
+		return nil
+	}}
+	sink = &recordingResponseSink{}
+	responder, err := NewResponder(manager, generator, llm.Options{Temperature: 0.4, MaxTokens: 20}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := responder.Handle(context.Background(), Query{Text: "вопрос"}); err != nil {
+		t.Fatal(err)
+	}
+	var streamed strings.Builder
+	for _, delta := range sink.pushes {
+		_, _ = streamed.WriteString(delta.Text)
+	}
+	if got, want := streamed.String(), "текст \tмежду"; got != want {
+		t.Fatalf("streamed=%q want=%q", got, want)
+	}
+}
+
 func TestResponderUsesTurnIDAndCompletesBeforeNextRequest(t *testing.T) {
 	manager := newResponderTestManager(t)
 	var requests []llm.Request
-	responseCalls := 0
 	generator := fakeGenerator{generate: func(_ context.Context, request llm.Request, emit llm.Emit) error {
 		requests = append(requests, request)
 		if len(requests) == 1 {
@@ -114,28 +225,24 @@ func TestResponderUsesTurnIDAndCompletesBeforeNextRequest(t *testing.T) {
 		}
 		return nil
 	}}
-	responder, err := NewResponder(manager, generator, llm.Options{Temperature: 0.4, MaxTokens: 8}, func(_ context.Context, response Response) error {
-		responseCalls++
-		wantTurnID := uint64(responseCalls)
+	responder, sink := newResponderWithComplete(t, manager, generator, llm.Options{Temperature: 0.4, MaxTokens: 8}, func(_ context.Context, response Response) error {
+		wantTurnID := uint64(len(requests))
 		if response.TurnID != wantTurnID {
 			t.Fatalf("response TurnID = %d, want %d", response.TurnID, wantTurnID)
 		}
-		if responseCalls == 1 && response.UtteranceID != 42 {
+		if len(requests) == 1 && response.UtteranceID != 42 {
 			t.Fatalf("response UtteranceID = %d, want 42", response.UtteranceID)
 		}
 		return nil
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := responder.Handle(context.Background(), Query{UtteranceID: 42, Text: "first query"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := responder.Handle(context.Background(), Query{UtteranceID: 99, Text: "second query"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(requests) != 2 || responseCalls != 2 {
-		t.Fatalf("requests=%d responses=%d", len(requests), responseCalls)
+	if len(requests) != 2 || len(sink.completes) != 2 || len(sink.aborts) != 0 {
+		t.Fatalf("requests=%d completes=%d aborts=%d", len(requests), len(sink.completes), len(sink.aborts))
 	}
 	wantSecondMessages := []dialogue.Message{
 		{Role: dialogue.RoleUser, Content: "first query"},
@@ -169,16 +276,12 @@ func TestResponderAbortsTurnAfterGenerationErrors(t *testing.T) {
 				}
 				return emit(llm.TextDelta{Text: "complete"})
 			}}
-			responseCalls := 0
-			responder, err := NewResponder(manager, generator, llm.Options{Temperature: 0, MaxTokens: 1}, func(context.Context, Response) error { responseCalls++; return nil })
-			if err != nil {
-				t.Fatal(err)
-			}
+			responder, sink := newResponderWithComplete(t, manager, generator, llm.Options{Temperature: 0, MaxTokens: 1}, nil)
 			if err := responder.Handle(context.Background(), Query{Text: "first query"}); !errors.Is(err, generationErr) {
 				t.Fatalf("Handle() error = %v, want generation cause", err)
 			}
-			if responseCalls != 0 {
-				t.Fatal("ResponseHandler called for failed generation")
+			if len(sink.completes) != 0 || len(sink.aborts) != 1 {
+				t.Fatalf("sink completes=%d aborts=%d after failed generation", len(sink.completes), len(sink.aborts))
 			}
 			wantAfterFailure := []dialogue.Message{{Role: dialogue.RoleUser, Content: "first query"}}
 			if !reflect.DeepEqual(manager.Snapshot().Messages, wantAfterFailure) {
@@ -210,16 +313,12 @@ func TestResponderRejectsEmptyGeneratedResponse(t *testing.T) {
 				}
 				return nil
 			}}
-			responses := 0
-			responder, err := NewResponder(manager, generator, llm.Options{Temperature: 1, MaxTokens: 10}, func(context.Context, Response) error { responses++; return nil })
-			if err != nil {
-				t.Fatal(err)
-			}
+			responder, sink := newResponderWithComplete(t, manager, generator, llm.Options{Temperature: 1, MaxTokens: 10}, nil)
 			if err := responder.Handle(context.Background(), Query{Text: "query"}); !errors.Is(err, ErrEmptyResponse) {
 				t.Fatalf("Handle() error = %v, want ErrEmptyResponse", err)
 			}
-			if responses != 0 || !reflect.DeepEqual(manager.Snapshot().Messages, []dialogue.Message{{Role: dialogue.RoleUser, Content: "query"}}) {
-				t.Fatalf("responses=%d history=%+v", responses, manager.Snapshot().Messages)
+			if len(sink.pushes) != 0 || len(sink.completes) != 0 || len(sink.aborts) != 1 || !reflect.DeepEqual(manager.Snapshot().Messages, []dialogue.Message{{Role: dialogue.RoleUser, Content: "query"}}) {
+				t.Fatalf("pushes=%d completes=%d aborts=%d history=%+v", len(sink.pushes), len(sink.completes), len(sink.aborts), manager.Snapshot().Messages)
 			}
 			if _, err := manager.BeginTurn("next query"); err != nil {
 				t.Fatalf("turn remains active after empty response: %v", err)
@@ -228,18 +327,18 @@ func TestResponderRejectsEmptyGeneratedResponse(t *testing.T) {
 	}
 }
 
-func TestResponderAbortsWhenResponseHandlerFails(t *testing.T) {
+func TestResponderAbortsWhenSinkCompleteFails(t *testing.T) {
 	manager := newResponderTestManager(t)
 	handlerErr := errors.New("consumer rejected response")
 	generator := fakeGenerator{generate: func(_ context.Context, _ llm.Request, emit llm.Emit) error {
 		return emit(llm.TextDelta{Text: "answer"})
 	}}
-	responder, err := NewResponder(manager, generator, llm.Options{Temperature: 0, MaxTokens: 1}, func(context.Context, Response) error { return handlerErr })
-	if err != nil {
-		t.Fatal(err)
-	}
+	responder, sink := newResponderWithComplete(t, manager, generator, llm.Options{Temperature: 0, MaxTokens: 1}, func(context.Context, Response) error { return handlerErr })
 	if err := responder.Handle(context.Background(), Query{Text: "query"}); !errors.Is(err, handlerErr) {
 		t.Fatalf("Handle() error = %v, want handler cause", err)
+	}
+	if len(sink.completes) != 1 || len(sink.aborts) != 1 {
+		t.Fatalf("sink completes=%d aborts=%d", len(sink.completes), len(sink.aborts))
 	}
 	if !reflect.DeepEqual(manager.Snapshot().Messages, []dialogue.Message{{Role: dialogue.RoleUser, Content: "query"}}) {
 		t.Fatalf("history after rejected response = %+v", manager.Snapshot().Messages)
@@ -249,39 +348,80 @@ func TestResponderAbortsWhenResponseHandlerFails(t *testing.T) {
 	}
 }
 
+func TestResponderAbortsWhenSinkPushFails(t *testing.T) {
+	manager := newResponderTestManager(t)
+	pushErr := errors.New("output failed")
+	generator := fakeGenerator{generate: func(_ context.Context, _ llm.Request, emit llm.Emit) error {
+		return emit(llm.TextDelta{Text: "answer"})
+	}}
+	sink := &recordingResponseSink{pushFunc: func(_ context.Context, _ ResponseDelta) error { return pushErr }}
+	responder, err := NewResponder(manager, generator, llm.Options{Temperature: 0, MaxTokens: 1}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := responder.Handle(context.Background(), Query{Text: "query"}); !errors.Is(err, pushErr) {
+		t.Fatalf("Handle() error = %v, want push cause", err)
+	}
+	if len(sink.pushes) != 1 || len(sink.completes) != 0 || len(sink.aborts) != 1 {
+		t.Fatalf("sink pushes=%d completes=%d aborts=%d", len(sink.pushes), len(sink.completes), len(sink.aborts))
+	}
+	if !reflect.DeepEqual(manager.Snapshot().Messages, []dialogue.Message{{Role: dialogue.RoleUser, Content: "query"}}) {
+		t.Fatalf("history after push failure = %+v", manager.Snapshot().Messages)
+	}
+}
+
+func TestResponderPreservesGenerationAndSinkAbortErrors(t *testing.T) {
+	manager := newResponderTestManager(t)
+	generationErr := errors.New("generation failed")
+	abortErr := errors.New("output cleanup failed")
+	generator := fakeGenerator{generate: func(context.Context, llm.Request, llm.Emit) error { return generationErr }}
+	sink := &recordingResponseSink{abortFunc: func(context.Context, ResponseAbort) error { return abortErr }}
+	responder, err := NewResponder(manager, generator, llm.Options{Temperature: 0, MaxTokens: 1}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := responder.Handle(context.Background(), Query{UtteranceID: 42, Text: "query"}); !errors.Is(err, generationErr) || !errors.Is(err, abortErr) {
+		t.Fatalf("Handle() error=%v, want generation and cleanup causes", err)
+	}
+	if len(sink.aborts) != 1 || sink.aborts[0] != (ResponseAbort{UtteranceID: 42, TurnID: 1}) {
+		t.Fatalf("Abort calls=%+v", sink.aborts)
+	}
+	if _, err := manager.BeginTurn("next query"); err != nil {
+		t.Fatalf("dialogue turn was not released after sink cleanup failure: %v", err)
+	}
+}
+
 func TestResponderCancellationBoundaries(t *testing.T) {
 	t.Run("already canceled", func(t *testing.T) {
 		manager := newResponderTestManager(t)
-		generatorCalls, handlerCalls := 0, 0
+		generatorCalls := 0
 		generator := fakeGenerator{generate: func(context.Context, llm.Request, llm.Emit) error { generatorCalls++; return nil }}
-		responder, err := NewResponder(manager, generator, llm.Options{Temperature: 0, MaxTokens: 1}, func(context.Context, Response) error { handlerCalls++; return nil })
-		if err != nil {
-			t.Fatal(err)
-		}
+		responder, sink := newResponderWithComplete(t, manager, generator, llm.Options{Temperature: 0, MaxTokens: 1}, nil)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		if err := responder.Handle(ctx, Query{Text: "query"}); !errors.Is(err, context.Canceled) {
 			t.Fatalf("Handle() error = %v", err)
 		}
-		if generatorCalls != 0 || handlerCalls != 0 || len(manager.Snapshot().Messages) != 0 {
-			t.Fatalf("generator=%d handler=%d history=%+v", generatorCalls, handlerCalls, manager.Snapshot().Messages)
+		if generatorCalls != 0 || len(sink.pushes)+len(sink.completes)+len(sink.aborts) != 0 || len(manager.Snapshot().Messages) != 0 {
+			t.Fatalf("generator=%d sink=%+v history=%+v", generatorCalls, sink, manager.Snapshot().Messages)
 		}
 	})
 
 	t.Run("during generate", func(t *testing.T) {
 		manager := newResponderTestManager(t)
 		started := make(chan struct{})
-		generator := fakeGenerator{generate: func(ctx context.Context, _ llm.Request, _ llm.Emit) error {
+		generator := fakeGenerator{generate: func(ctx context.Context, _ llm.Request, emit llm.Emit) error {
+			if err := emit(llm.TextDelta{Text: "visible"}); err != nil {
+				return err
+			}
 			close(started)
 			<-ctx.Done()
 			return ctx.Err()
 		}}
-		handlerCalls := 0
-		responder, err := NewResponder(manager, generator, llm.Options{Temperature: 0, MaxTokens: 1}, func(context.Context, Response) error { handlerCalls++; return nil })
-		if err != nil {
-			t.Fatal(err)
-		}
-		ctx, cancel := context.WithCancel(context.Background())
+		responder, sink := newResponderWithComplete(t, manager, generator, llm.Options{Temperature: 0, MaxTokens: 1}, nil)
+		type contextKey string
+		requestContext := context.WithValue(context.Background(), contextKey("trace"), "kept")
+		ctx, cancel := context.WithCancel(requestContext)
 		defer cancel()
 		done := make(chan error, 1)
 		go func() { done <- responder.Handle(ctx, Query{Text: "query"}) }()
@@ -290,8 +430,12 @@ func TestResponderCancellationBoundaries(t *testing.T) {
 		if err := awaitResponderResult(t, done); !errors.Is(err, context.Canceled) {
 			t.Fatalf("Handle() error = %v", err)
 		}
-		if handlerCalls != 0 || !reflect.DeepEqual(manager.Snapshot().Messages, []dialogue.Message{{Role: dialogue.RoleUser, Content: "query"}}) {
-			t.Fatalf("handler=%d history=%+v", handlerCalls, manager.Snapshot().Messages)
+		if len(sink.pushes) != 1 || len(sink.completes) != 0 || len(sink.aborts) != 1 || !reflect.DeepEqual(manager.Snapshot().Messages, []dialogue.Message{{Role: dialogue.RoleUser, Content: "query"}}) {
+			t.Fatalf("sink=%+v history=%+v", sink, manager.Snapshot().Messages)
+		}
+		abortContext := sink.abortContexts[0]
+		if err := abortContext.Err(); err != nil || abortContext.Value(contextKey("trace")) != "kept" {
+			t.Fatalf("abort context err=%v trace=%v", err, abortContext.Value(contextKey("trace")))
 		}
 		if _, err := manager.BeginTurn("next query"); err != nil {
 			t.Fatalf("turn remains active after cancellation: %v", err)
@@ -301,35 +445,37 @@ func TestResponderCancellationBoundaries(t *testing.T) {
 	t.Run("after generate before handler", func(t *testing.T) {
 		manager := newResponderTestManager(t)
 		ctx, cancel := context.WithCancel(context.Background())
-		generator := fakeGenerator{generate: func(context.Context, llm.Request, llm.Emit) error { cancel(); return nil }}
-		handlerCalls := 0
-		responder, err := NewResponder(manager, generator, llm.Options{Temperature: 0, MaxTokens: 1}, func(context.Context, Response) error { handlerCalls++; return nil })
-		if err != nil {
-			t.Fatal(err)
-		}
+		generator := fakeGenerator{generate: func(_ context.Context, _ llm.Request, emit llm.Emit) error {
+			if err := emit(llm.TextDelta{Text: "visible"}); err != nil {
+				return err
+			}
+			cancel()
+			return nil
+		}}
+		responder, sink := newResponderWithComplete(t, manager, generator, llm.Options{Temperature: 0, MaxTokens: 1}, nil)
 		if err := responder.Handle(ctx, Query{Text: "query"}); !errors.Is(err, context.Canceled) {
 			t.Fatalf("Handle() error = %v", err)
 		}
-		if handlerCalls != 0 || !reflect.DeepEqual(manager.Snapshot().Messages, []dialogue.Message{{Role: dialogue.RoleUser, Content: "query"}}) {
-			t.Fatalf("handler=%d history=%+v", handlerCalls, manager.Snapshot().Messages)
+		if len(sink.pushes) != 1 || len(sink.completes) != 0 || len(sink.aborts) != 1 || !reflect.DeepEqual(manager.Snapshot().Messages, []dialogue.Message{{Role: dialogue.RoleUser, Content: "query"}}) {
+			t.Fatalf("sink=%+v history=%+v", sink, manager.Snapshot().Messages)
 		}
 		if _, err := manager.BeginTurn("next query"); err != nil {
 			t.Fatalf("turn remains active after post-generation cancellation: %v", err)
 		}
 	})
 
-	t.Run("handler accepts and cancels", func(t *testing.T) {
+	t.Run("sink accepts and cancels", func(t *testing.T) {
 		manager := newResponderTestManager(t)
 		ctx, cancel := context.WithCancel(context.Background())
 		generator := fakeGenerator{generate: func(_ context.Context, _ llm.Request, emit llm.Emit) error {
 			return emit(llm.TextDelta{Text: "accepted"})
 		}}
-		responder, err := NewResponder(manager, generator, llm.Options{Temperature: 0, MaxTokens: 1}, func(context.Context, Response) error { cancel(); return nil })
-		if err != nil {
-			t.Fatal(err)
-		}
+		responder, sink := newResponderWithComplete(t, manager, generator, llm.Options{Temperature: 0, MaxTokens: 1}, func(context.Context, Response) error { cancel(); return nil })
 		if err := responder.Handle(ctx, Query{Text: "query"}); err != nil {
-			t.Fatalf("Handle() after handler accepted response = %v", err)
+			t.Fatalf("Handle() after sink accepted response = %v", err)
+		}
+		if len(sink.completes) != 1 || len(sink.aborts) != 0 {
+			t.Fatalf("sink completes=%d aborts=%d", len(sink.completes), len(sink.aborts))
 		}
 		want := []dialogue.Message{{Role: dialogue.RoleUser, Content: "query"}, {Role: dialogue.RoleAssistant, Content: "accepted"}}
 		if !reflect.DeepEqual(manager.Snapshot().Messages, want) {
@@ -346,14 +492,15 @@ func TestResponderDoesNotAbortAnotherActiveTurn(t *testing.T) {
 	}
 	generatorCalls := 0
 	generator := fakeGenerator{generate: func(context.Context, llm.Request, llm.Emit) error { generatorCalls++; return nil }}
-	responder, err := NewResponder(manager, generator, llm.Options{Temperature: 0, MaxTokens: 1}, func(context.Context, Response) error { return nil })
+	sink := &recordingResponseSink{}
+	responder, err := NewResponder(manager, generator, llm.Options{Temperature: 0, MaxTokens: 1}, sink)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := responder.Handle(context.Background(), Query{Text: "responder query"}); !errors.Is(err, dialogue.ErrTurnActive) {
 		t.Fatalf("Handle() error = %v, want ErrTurnActive", err)
 	}
-	if generatorCalls != 0 || !reflect.DeepEqual(manager.Snapshot().Messages, []dialogue.Message{{Role: dialogue.RoleUser, Content: "other owner's query"}}) {
+	if generatorCalls != 0 || len(sink.aborts) != 0 || !reflect.DeepEqual(manager.Snapshot().Messages, []dialogue.Message{{Role: dialogue.RoleUser, Content: "other owner's query"}}) {
 		t.Fatalf("generator calls=%d history=%+v", generatorCalls, manager.Snapshot().Messages)
 	}
 	if err := manager.CompleteTurn(foreignTurn, "other owner's response"); err != nil {
@@ -366,24 +513,26 @@ func TestNewResponderRejectsNilDependenciesAndInvalidOptions(t *testing.T) {
 	generatorCalls := 0
 	validGenerator := fakeGenerator{generate: func(context.Context, llm.Request, llm.Emit) error { generatorCalls++; return nil }}
 	var typedNilGenerator *fakeGenerator
-	handler := ResponseHandler(func(context.Context, Response) error { return nil })
+	validSink := &recordingResponseSink{}
+	var typedNilSink *recordingResponseSink
 	validOptions := llm.Options{Temperature: 0.4, MaxTokens: 16}
 	tests := []struct {
 		name      string
 		manager   *dialogue.Manager
 		generator llm.Generator
 		options   llm.Options
-		handler   ResponseHandler
+		sink      ResponseSink
 	}{
-		{name: "nil manager", manager: nil, generator: validGenerator, options: validOptions, handler: handler},
-		{name: "nil generator", manager: manager, generator: nil, options: validOptions, handler: handler},
-		{name: "typed nil generator", manager: manager, generator: typedNilGenerator, options: validOptions, handler: handler},
-		{name: "nil handler", manager: manager, generator: validGenerator, options: validOptions, handler: nil},
-		{name: "invalid options", manager: manager, generator: validGenerator, options: llm.Options{Temperature: 0, MaxTokens: 0}, handler: handler},
+		{name: "nil manager", manager: nil, generator: validGenerator, options: validOptions, sink: validSink},
+		{name: "nil generator", manager: manager, generator: nil, options: validOptions, sink: validSink},
+		{name: "typed nil generator", manager: manager, generator: typedNilGenerator, options: validOptions, sink: validSink},
+		{name: "nil sink", manager: manager, generator: validGenerator, options: validOptions, sink: nil},
+		{name: "typed nil sink", manager: manager, generator: validGenerator, options: validOptions, sink: typedNilSink},
+		{name: "invalid options", manager: manager, generator: validGenerator, options: llm.Options{Temperature: 0, MaxTokens: 0}, sink: validSink},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := NewResponder(test.manager, test.generator, test.options, test.handler)
+			_, err := NewResponder(test.manager, test.generator, test.options, test.sink)
 			if err == nil {
 				t.Fatal("NewResponder accepted invalid dependency")
 			}
@@ -392,7 +541,7 @@ func TestNewResponderRejectsNilDependenciesAndInvalidOptions(t *testing.T) {
 			}
 		})
 	}
-	if _, err := NewResponder(manager, validGenerator, validOptions, handler); err != nil {
+	if _, err := NewResponder(manager, validGenerator, validOptions, validSink); err != nil {
 		t.Fatalf("NewResponder(valid dependencies) = %v", err)
 	}
 	if generatorCalls != 0 {
