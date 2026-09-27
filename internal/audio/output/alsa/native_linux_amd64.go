@@ -21,7 +21,9 @@ import (
 )
 
 type nativePCMDevice struct {
-	handle *C.snd_pcm_t
+	handle        *C.snd_pcm_t
+	periodFrames  int
+	prefillFrames int
 }
 
 func Open(ctx context.Context, options Options) (*Player, error) {
@@ -67,11 +69,59 @@ func openNativePCMDevice(options Options) (*nativePCMDevice, error) {
 		1,
 		C.uint(options.SampleRate),
 		1,
-		100000,
+		250000,
 	); result < 0 {
 		return nil, errors.Join(fmt.Errorf("%w: настроить PCM: %w", ErrDevice, nativeErr(result)), device.Close())
 	}
+	var bufferFrames C.snd_pcm_uframes_t
+	var periodFrames C.snd_pcm_uframes_t
+	if result := C.snd_pcm_get_params(handle, &bufferFrames, &periodFrames); result < 0 {
+		return nil, errors.Join(fmt.Errorf("%w: получить размеры буфера PCM: %w", ErrDevice, nativeErr(result)), device.Close())
+	}
+	maxInt := uint64(^uint(0) >> 1)
+	if bufferFrames == 0 || periodFrames == 0 || bufferFrames == ^C.snd_pcm_uframes_t(0) || uint64(periodFrames) > maxInt {
+		return nil, errors.Join(fmt.Errorf("%w: ALSA вернула недопустимые размеры буфера PCM", ErrDevice), device.Close())
+	}
+	var swParams *C.snd_pcm_sw_params_t
+	if result := C.snd_pcm_sw_params_malloc(&swParams); result < 0 {
+		return nil, errors.Join(fmt.Errorf("%w: выделить параметры PCM: %w", ErrDevice, nativeErr(result)), device.Close())
+	}
+	defer C.snd_pcm_sw_params_free(swParams)
+	if result := C.snd_pcm_sw_params_current(handle, swParams); result < 0 {
+		return nil, errors.Join(fmt.Errorf("%w: прочитать параметры PCM: %w", ErrDevice, nativeErr(result)), device.Close())
+	}
+	if result := C.snd_pcm_sw_params_set_start_threshold(handle, swParams, bufferFrames+1); result < 0 {
+		return nil, errors.Join(fmt.Errorf("%w: отключить автоматический запуск PCM: %w", ErrDevice, nativeErr(result)), device.Close())
+	}
+	if result := C.snd_pcm_sw_params(handle, swParams); result < 0 {
+		return nil, errors.Join(fmt.Errorf("%w: применить параметры PCM: %w", ErrDevice, nativeErr(result)), device.Close())
+	}
+	period := uint64(periodFrames)
+	buffer := uint64(bufferFrames)
+	target := uint64(options.SampleRate) * uint64(prefillDuration) / uint64(time.Second)
+	twoPeriods := period * minimumPrefillFrames
+	if target < twoPeriods {
+		target = twoPeriods
+	}
+	if target > buffer {
+		target = buffer
+	}
+	if target == 0 || target > maxInt {
+		return nil, errors.Join(fmt.Errorf("%w: ALSA вернула недопустимую ёмкость PCM", ErrDevice), device.Close())
+	}
+	device.periodFrames = int(periodFrames)
+	device.prefillFrames = int(target)
 	return device, nil
+}
+
+func (d *nativePCMDevice) PeriodFrames() int  { return d.periodFrames }
+func (d *nativePCMDevice) PrefillFrames() int { return d.prefillFrames }
+
+func (d *nativePCMDevice) Start() error {
+	if result := C.snd_pcm_start(d.handle); result < 0 {
+		return nativeErr(result)
+	}
+	return nil
 }
 
 func (d *nativePCMDevice) Write(samples []float32) (int, error) {

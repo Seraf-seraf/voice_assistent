@@ -12,21 +12,24 @@ import (
 )
 
 type fakePCMDevice struct {
-	writes         []int
-	writeErrors    []error
-	accepted       []float32
-	waitErr        error
-	waitEntered    chan struct{}
-	waitImmediate  bool
-	drainErrors    []error
-	drainEntered   chan struct{}
-	drainAlwaysErr error
-	prepareErr     error
-	dropErr        error
-	closeCount     int
-	prepareCount   int
-	dropCount      int
-	drainCount     int
+	writes           []int
+	writeErrors      []error
+	accepted         []float32
+	waitErr          error
+	waitEntered      chan struct{}
+	waitImmediate    bool
+	drainErrors      []error
+	drainEntered     chan struct{}
+	drainAlwaysErr   error
+	prepareErr       error
+	startErr         error
+	dropErr          error
+	closeCount       int
+	prepareCount     int
+	startCount       int
+	startAfterFrames int
+	dropCount        int
+	drainCount       int
 }
 
 func (d *fakePCMDevice) Write(samples []float32) (int, error) {
@@ -88,6 +91,17 @@ func (d *fakePCMDevice) Drain() error {
 func (d *fakePCMDevice) Drop() error    { d.dropCount++; return d.dropErr }
 func (d *fakePCMDevice) Prepare() error { d.prepareCount++; return d.prepareErr }
 func (d *fakePCMDevice) Close() error   { d.closeCount++; return nil }
+func (d *fakePCMDevice) PeriodFrames() int {
+	return 22050
+}
+func (d *fakePCMDevice) PrefillFrames() int {
+	return 22050
+}
+func (d *fakePCMDevice) Start() error {
+	d.startCount++
+	d.startAfterFrames = len(d.accepted)
+	return d.startErr
+}
 
 func TestPlayerPlayRetriesShortWritesWithoutDuplicatingSamples(t *testing.T) {
 	device := &fakePCMDevice{
@@ -101,6 +115,9 @@ func TestPlayerPlayRetriesShortWritesWithoutDuplicatingSamples(t *testing.T) {
 	if !reflect.DeepEqual(device.accepted, input) || device.dropCount != 0 || device.drainCount != 1 {
 		t.Fatalf("accepted=%v drops=%d drains=%d", device.accepted, device.dropCount, device.drainCount)
 	}
+	if device.startCount != 1 || device.startAfterFrames != len(input) {
+		t.Fatalf("start count=%d after frames=%d", device.startCount, device.startAfterFrames)
+	}
 }
 
 func TestPlayerCancellationWhileWaitingDropsPendingFrames(t *testing.T) {
@@ -113,8 +130,8 @@ func TestPlayerCancellationWhileWaitingDropsPendingFrames(t *testing.T) {
 		cancel()
 	}()
 	err := player.Play(ctx, audio.PCM{Samples: []float32{0.1}, SampleRate: 22050})
-	if !errors.Is(err, context.Canceled) || device.dropCount != 1 {
-		t.Fatalf("Play() error=%v drop count=%d", err, device.dropCount)
+	if !errors.Is(err, context.Canceled) || device.dropCount != 1 || device.startCount != 0 {
+		t.Fatalf("Play() error=%v drop count=%d start count=%d", err, device.dropCount, device.startCount)
 	}
 }
 
@@ -176,3 +193,50 @@ func TestPlayerCloseIsIdempotent(t *testing.T) {
 		t.Fatalf("second Close() error=%v close count=%d", err, device.closeCount)
 	}
 }
+
+func TestPlayerPrefillsBeforeStartingPlayback(t *testing.T) {
+	device := &prefillPCMDevice{
+		fakePCMDevice: fakePCMDevice{writes: []int{1, 1, 1, 1, 1}},
+		periodFrames:  2,
+		prefillFrames: 4,
+	}
+	player := newPlayer(device, 22050)
+	input := []float32{0.1, 0.2, 0.3, 0.4, 0.5}
+	if err := player.Play(context.Background(), audio.PCM{Samples: input, SampleRate: 22050}); err != nil {
+		t.Fatalf("Play() error = %v", err)
+	}
+	if !reflect.DeepEqual(device.accepted, input) || device.startCount != 1 || device.startAfterFrames != 4 {
+		t.Fatalf("accepted=%v start count=%d after frames=%d", device.accepted, device.startCount, device.startAfterFrames)
+	}
+}
+
+func TestPlayerStartsShortPhraseAfterAllSamplesAreQueued(t *testing.T) {
+	device := &prefillPCMDevice{fakePCMDevice: fakePCMDevice{}, periodFrames: 4, prefillFrames: 8}
+	player := newPlayer(device, 22050)
+	input := []float32{0.1, 0.2, 0.3}
+	if err := player.Play(context.Background(), audio.PCM{Samples: input, SampleRate: 22050}); err != nil {
+		t.Fatalf("Play() error = %v", err)
+	}
+	if device.startCount != 1 || device.startAfterFrames != len(input) {
+		t.Fatalf("start count=%d after frames=%d", device.startCount, device.startAfterFrames)
+	}
+}
+
+func TestPlayerDropsWhenExplicitStartFails(t *testing.T) {
+	startErr := errors.New("ошибка запуска")
+	device := &prefillPCMDevice{fakePCMDevice: fakePCMDevice{startErr: startErr}, periodFrames: 2, prefillFrames: 2}
+	player := newPlayer(device, 22050)
+	err := player.Play(context.Background(), audio.PCM{Samples: []float32{0.1, 0.2}, SampleRate: 22050})
+	if !errors.Is(err, startErr) || device.dropCount != 1 || device.drainCount != 0 {
+		t.Fatalf("Play() error=%v drop count=%d drain count=%d", err, device.dropCount, device.drainCount)
+	}
+}
+
+type prefillPCMDevice struct {
+	fakePCMDevice
+	periodFrames  int
+	prefillFrames int
+}
+
+func (d *prefillPCMDevice) PeriodFrames() int  { return d.periodFrames }
+func (d *prefillPCMDevice) PrefillFrames() int { return d.prefillFrames }

@@ -15,8 +15,9 @@ import (
 
 const (
 	maxSampleRate        = 192000
-	transferChunkDivisor = 50
 	deviceWaitInterval   = 20 * time.Millisecond
+	minimumPrefillFrames = 2
+	prefillDuration      = 100 * time.Millisecond
 )
 
 var (
@@ -44,6 +45,9 @@ func (o Options) Validate() error {
 type pcmDevice interface {
 	Write([]float32) (int, error)
 	Wait(context.Context, time.Duration) error
+	PeriodFrames() int
+	PrefillFrames() int
+	Start() error
 	Drain() error
 	Drop() error
 	Prepare() error
@@ -89,17 +93,32 @@ func (p *Player) Play(ctx context.Context, pcm audio.PCM) error {
 		return cause
 	}
 
-	chunkSize := p.sampleRate / transferChunkDivisor
-	if chunkSize < 1 {
-		chunkSize = 1
+	chunkSize := p.device.PeriodFrames()
+	prefillFrames := p.device.PrefillFrames()
+	if chunkSize < 1 || prefillFrames < 1 {
+		return fail(fmt.Errorf("%w: ALSA вернула недопустимые размеры периода или предварительного буфера", ErrDevice))
 	}
+	if prefillFrames > len(pcm.Samples) {
+		prefillFrames = len(pcm.Samples)
+	}
+	started := false
 	for offset := 0; offset < len(pcm.Samples); {
 		if err := ctx.Err(); err != nil {
 			return fail(err)
 		}
-		end := offset + chunkSize
-		if end > len(pcm.Samples) {
-			end = len(pcm.Samples)
+		writeLimit := len(pcm.Samples)
+		if !started {
+			writeLimit = prefillFrames
+		}
+		end := writeLimit
+		if chunkSize < writeLimit-offset {
+			end = offset + chunkSize
+		}
+		if end > writeLimit {
+			end = writeLimit
+		}
+		if end <= offset {
+			return fail(fmt.Errorf("%w: ALSA не достигла порога предварительного заполнения", ErrDevice))
 		}
 		chunk := pcm.Samples[offset:end]
 		written, writeErr := p.device.Write(chunk)
@@ -108,6 +127,16 @@ func (p *Player) Play(ctx context.Context, pcm audio.PCM) error {
 		}
 		if written > 0 {
 			offset += written
+		}
+		retryableWriteErr := errors.Is(writeErr, syscall.EAGAIN) || errors.Is(writeErr, syscall.EINTR)
+		if !started && offset >= prefillFrames && written > 0 && (writeErr == nil || retryableWriteErr) {
+			if err := ctx.Err(); err != nil {
+				return fail(err)
+			}
+			if err := p.device.Start(); err != nil {
+				return fail(fmt.Errorf("запустить ALSA PCM: %w", err))
+			}
+			started = true
 		}
 		if writeErr == nil && written > 0 {
 			continue
@@ -132,6 +161,14 @@ func (p *Player) Play(ctx context.Context, pcm audio.PCM) error {
 				continue
 			}
 			return fail(fmt.Errorf("ожидать готовность ALSA PCM: %w", err))
+		}
+	}
+	if !started {
+		if err := ctx.Err(); err != nil {
+			return fail(err)
+		}
+		if err := p.device.Start(); err != nil {
+			return fail(fmt.Errorf("запустить ALSA PCM: %w", err))
 		}
 	}
 
