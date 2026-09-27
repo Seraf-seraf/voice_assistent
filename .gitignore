@@ -7,3 +7,4 @@
 *.out
 .native/
 *.gguf
+docker/models/whisper/*.bin
