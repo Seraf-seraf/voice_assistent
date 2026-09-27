@@ -10,6 +10,11 @@ import (
 
 func TestLoadUsesDefaultsAndEnvironment(t *testing.T) {
 	t.Setenv("ASSISTANT_LLM_MODEL", "qwen-test")
+	t.Setenv("ASSISTANT_LLM_LIBRARY_DIR", "/native")
+	t.Setenv("ASSISTANT_LLM_CONTEXT_SIZE", "8192")
+	t.Setenv("ASSISTANT_LLM_GPU_LAYERS", "42")
+	t.Setenv("ASSISTANT_LLM_THREADS", "6")
+	t.Setenv("ASSISTANT_LLM_TIMEOUT", "45s")
 	t.Setenv("ASSISTANT_MODE", ModeWake)
 	t.Setenv("ASSISTANT_MAX_HISTORY_MESSAGES", "12")
 	t.Setenv("ASSISTANT_VAD_END_SILENCE", "900ms")
@@ -23,6 +28,9 @@ func TestLoadUsesDefaultsAndEnvironment(t *testing.T) {
 	}
 	if cfg.LLM.Model != "qwen-test" || cfg.App.Mode != ModeWake {
 		t.Fatalf("environment overrides not applied: %+v", cfg)
+	}
+	if cfg.LLM.LibraryDir != "/native" || cfg.LLM.ContextSize != 8192 || cfg.LLM.GPULayers != 42 || cfg.LLM.Threads != 6 || cfg.LLM.Timeout.Std() != 45*time.Second {
+		t.Fatalf("LLM environment overrides not applied: %+v", cfg.LLM)
 	}
 	if cfg.Dialogue.MaxHistoryMessages != 12 {
 		t.Fatalf("MaxHistoryMessages = %d, want 12", cfg.Dialogue.MaxHistoryMessages)
@@ -42,11 +50,17 @@ func TestLoadYAMLAndEnvironmentPrecedence(t *testing.T) {
 	path := writeConfig(t, `
 llm:
   model: from-file
+  library_dir: /from-file/native
+  context_size: 2048
+  gpu_layers: 12
+  threads: 3
+  timeout: 22s
   temperature: 0.7
 vad:
   end_silence: 750ms
 `)
 	t.Setenv("ASSISTANT_LLM_MODEL", "from-env")
+	t.Setenv("ASSISTANT_LLM_LIBRARY_DIR", "/from-env/native")
 
 	cfg, err := Load(path)
 	if err != nil {
@@ -57,6 +71,24 @@ vad:
 	}
 	if cfg.LLM.Temperature != 0.7 || cfg.VAD.EndSilence.Std() != 750*time.Millisecond {
 		t.Fatalf("file values not applied: %+v", cfg)
+	}
+	if cfg.LLM.LibraryDir != "/from-env/native" || cfg.LLM.ContextSize != 2048 || cfg.LLM.GPULayers != 12 || cfg.LLM.Threads != 3 || cfg.LLM.Timeout.Std() != 22*time.Second {
+		t.Fatalf("LLM YAML/environment values not applied: %+v", cfg.LLM)
+	}
+}
+
+func TestLoadRejectsInvalidLLMEnvironmentTypes(t *testing.T) {
+	for _, test := range []struct{ name, value string }{
+		{"ASSISTANT_LLM_THREADS", "many"},
+		{"ASSISTANT_LLM_CONTEXT_SIZE", "large"},
+		{"ASSISTANT_LLM_TIMEOUT", "soon"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv(test.name, test.value)
+			if _, err := Load(""); err == nil || !strings.Contains(err.Error(), test.name) {
+				t.Fatalf("Load() error=%v, want %s parse error", err, test.name)
+			}
+		})
 	}
 }
 

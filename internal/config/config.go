@@ -87,9 +87,14 @@ type STTConfig struct {
 }
 
 type LLMConfig struct {
-	Model       string  `yaml:"model"`
-	Temperature float64 `yaml:"temperature"`
-	MaxTokens   int     `yaml:"max_tokens"`
+	Model       string   `yaml:"model"`
+	LibraryDir  string   `yaml:"library_dir"`
+	ContextSize int      `yaml:"context_size"`
+	GPULayers   int      `yaml:"gpu_layers"`
+	Threads     int      `yaml:"threads"`
+	Timeout     Duration `yaml:"timeout"`
+	Temperature float64  `yaml:"temperature"`
+	MaxTokens   int      `yaml:"max_tokens"`
 }
 
 type DialogueConfig struct {
@@ -134,7 +139,10 @@ func Default() Config {
 			URL: "http://127.0.0.1:8081/inference", Timeout: Duration(45 * time.Second),
 			MaxResponseBytes: 1 << 20,
 		},
-		LLM:      LLMConfig{Temperature: 0.4, MaxTokens: 512},
+		LLM: LLMConfig{
+			ContextSize: 4096, GPULayers: 99, Threads: 4, Timeout: Duration(30 * time.Second),
+			Temperature: 0.4, MaxTokens: 512,
+		},
 		Dialogue: DialogueConfig{MaxHistoryMessages: 20},
 		Transcript: TranscriptConfig{
 			MinSignificantRunes: 2,
@@ -201,6 +209,7 @@ func applyEnvironment(cfg *Config) error {
 		{"ASSISTANT_STT_URL", &cfg.STT.URL},
 		{"ASSISTANT_STT_API_KEY", &cfg.STT.APIKey},
 		{"ASSISTANT_LLM_MODEL", &cfg.LLM.Model},
+		{"ASSISTANT_LLM_LIBRARY_DIR", &cfg.LLM.LibraryDir},
 		{"ASSISTANT_PTT_KEY", &cfg.Control.PTTKey},
 	}
 	for _, value := range stringValues {
@@ -223,6 +232,10 @@ func applyEnvironment(cfg *Config) error {
 		"ASSISTANT_STT_MAX_RESPONSE_BYTES": int64Setter(&cfg.STT.MaxResponseBytes),
 		"ASSISTANT_LLM_TEMPERATURE":        floatSetter(&cfg.LLM.Temperature),
 		"ASSISTANT_LLM_MAX_TOKENS":         intSetter(&cfg.LLM.MaxTokens),
+		"ASSISTANT_LLM_CONTEXT_SIZE":       intSetter(&cfg.LLM.ContextSize),
+		"ASSISTANT_LLM_GPU_LAYERS":         intSetter(&cfg.LLM.GPULayers),
+		"ASSISTANT_LLM_THREADS":            intSetter(&cfg.LLM.Threads),
+		"ASSISTANT_LLM_TIMEOUT":            durationSetter(&cfg.LLM.Timeout),
 		"ASSISTANT_MAX_HISTORY_MESSAGES":   intSetter(&cfg.Dialogue.MaxHistoryMessages),
 		"ASSISTANT_TRANSCRIPT_MIN_RUNES":   intSetter(&cfg.Transcript.MinSignificantRunes),
 		"ASSISTANT_WAKE_ACTIVATION_WINDOW": durationSetter(&cfg.Wake.ActivationWindow),
@@ -298,12 +311,6 @@ func splitNonEmpty(raw string) []string {
 func (cfg Config) Validate() error {
 	if cfg.Audio.BufferFrames < 2 {
 		return errors.New("audio.buffer_frames: значение должно быть не меньше 2")
-	}
-	if cfg.LLM.Temperature < 0 || cfg.LLM.Temperature > 2 {
-		return errors.New("llm.temperature: значение должно быть от 0 до 2")
-	}
-	if cfg.LLM.MaxTokens <= 0 {
-		return errors.New("llm.max_tokens должен быть положительным")
 	}
 	if strings.TrimSpace(cfg.Control.PTTKey) == "" {
 		return errors.New("control.ptt_key: значение обязательно")

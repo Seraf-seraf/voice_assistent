@@ -1,6 +1,8 @@
 module github.com/Seraf-seraf/voice_assistent
 
-go 1.25.0
+go 1.26.0
+
+toolchain go1.26.8
 
 require (
 	github.com/gen2brain/malgo v0.11.25
@@ -11,6 +13,14 @@ require (
 )
 
 require (
+	github.com/ardanlabs/jinja v1.1.0 // indirect
+	github.com/ebitengine/purego v0.10.0 // indirect
+	github.com/jupiterrider/ffi v0.7.0 // indirect
+	golang.org/x/sys v0.42.0 // indirect
+)
+
+require (
+	github.com/hybridgroup/yzma v1.28.0
 	github.com/vcaesar/keycode v0.10.1 // indirect
 	github.com/youpy/go-riff v0.1.0 // indirect
 	github.com/zaf/g711 v0.0.0-20190814101024-76a4a538f52b // indirect

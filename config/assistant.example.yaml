@@ -30,7 +30,13 @@ stt:
   max_response_bytes: 1048576
 
 llm:
+  # Обязательны для запуска native-модели; абсолютные пути задаются пользователем.
   model: ""
+  library_dir: ""
+  context_size: 4096
+  gpu_layers: 99
+  threads: 4
+  timeout: 30s
   temperature: 0.4
   max_tokens: 512
 

@@ -7,9 +7,10 @@
 
 ## Требования
 
-- Go 1.25 или новее;
+- Go 1.26.8 (toolchain задаётся в `go.mod`);
 - CGO и GCC-compatible C compiler для сборки аудиовхода через miniaudio;
 - CGO для глобальной hold-PTT клавиши в Windows;
+- локальная GGUF-модель Qwen3.5-0.8B и native llama.cpp библиотеки для целевой ОС;
 - Docker с NVIDIA Container Toolkit для Whisper;
 - Windows-аудиоустройства, доступные через WASAPI.
 
@@ -38,15 +39,17 @@ make down          # остановка Docker-сервисов
 ```
 
 Тракт обработки: microphone → VAD → STT/Whisper → normalization → router →
-query boundary. Reset history подключён. Dialogue turn пока не начинается,
-генератора ответа нет. Режим PTT не включает global hotkey в runtime.
+локальная LLM → полный текстовый ответ в stdout. STT продолжает обращаться к
+Whisper через собственный HTTP adapter. Команда reset history очищает историю.
+Ответ генерируется последовательно в STT worker.
 
 ## LLM port
 
-Добавлены нейтральный интерфейс `llm.Generator` и прикладной `Responder`,
-который управляет dialogue turn и собирает полный текстовый ответ. Их поведение
-проверяется с тестовым fake, но production consumer пока не подключён. Модели и
-адаптера генерации нет, поэтому приложение пока не генерирует ответ.
+`llm.Generator` остаётся нейтральным портом. Production adapter использует
+YZMA v1.28.0 и llama.cpp v0.5.0 для локальной модели Qwen3.5-0.8B GGUF.
+Локальные веса и native DLL/SO не хранятся в Git. Настройка, установка
+библиотек и запуск проверок описаны в [docs/local-llm.md](docs/local-llm.md).
 
-Сборка текста в `Responder` не является streaming-выводом и не воспроизводит
-речь.
+`Responder` собирает полный ответ перед выводом. Streaming и TTS не реализованы.
+PTT hotkey не подключён; голосовая команда «стоп» не прерывает текущую
+генерацию.

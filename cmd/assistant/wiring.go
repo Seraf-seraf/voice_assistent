@@ -14,6 +14,8 @@ import (
 	"github.com/Seraf-seraf/voice_assistent/internal/config"
 	"github.com/Seraf-seraf/voice_assistent/internal/control/router"
 	"github.com/Seraf-seraf/voice_assistent/internal/dialogue"
+	"github.com/Seraf-seraf/voice_assistent/internal/llm"
+	"github.com/Seraf-seraf/voice_assistent/internal/llm/llamacpp"
 	"github.com/Seraf-seraf/voice_assistent/internal/stt"
 	"github.com/Seraf-seraf/voice_assistent/internal/transcript"
 	"github.com/Seraf-seraf/voice_assistent/internal/vad"
@@ -137,15 +139,35 @@ func newDialogueManager(appCfg config.AppConfig, dialogueCfg config.DialogueConf
 	})
 }
 
+func newGenerationOptions(cfg config.LLMConfig) (llm.Options, error) {
+	options := llm.Options{Temperature: cfg.Temperature, MaxTokens: cfg.MaxTokens}
+	if err := options.Validate(); err != nil {
+		return llm.Options{}, err
+	}
+	return options, nil
+}
+
+func newLocalGenerator(ctx context.Context, cfg config.LLMConfig) (*llamacpp.Generator, error) {
+	return llamacpp.Open(ctx, llamacpp.Options{
+		ModelPath: cfg.Model, LibraryDir: cfg.LibraryDir,
+		ContextSize: cfg.ContextSize, GPULayers: cfg.GPULayers,
+		Threads: cfg.Threads, Timeout: cfg.Timeout.Std(),
+	})
+}
+
 func newInputProcessor(
 	normalizer *transcript.Normalizer,
 	controlRouter *router.Router,
 	manager *dialogue.Manager,
+	queryHandler assistant.QueryHandler,
 	log *slog.Logger,
 ) (*assistant.InputProcessor, error) {
-	return assistant.NewInputProcessor(normalizer, controlRouter, manager, func(_ context.Context, query assistant.Query) error {
+	if queryHandler == nil {
+		return nil, errors.New("query handler обязателен")
+	}
+	return assistant.NewInputProcessor(normalizer, controlRouter, manager, func(ctx context.Context, query assistant.Query) error {
 		log.Debug("Получен запрос", "utterance_id", query.UtteranceID)
-		return nil
+		return queryHandler(ctx, query)
 	}, time.Now)
 }
 

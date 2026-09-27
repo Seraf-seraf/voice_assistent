@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 
+	"github.com/Seraf-seraf/voice_assistent/internal/assistant"
 	"github.com/Seraf-seraf/voice_assistent/internal/config"
 	"github.com/Seraf-seraf/voice_assistent/internal/logger"
 )
@@ -25,7 +26,7 @@ func main() {
 	}
 }
 
-func run(ctx context.Context) error {
+func run(ctx context.Context) (resultErr error) {
 	configPath := flag.String("config", "", "путь к YAML-конфигурации")
 	flag.Parse()
 
@@ -55,13 +56,34 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("создать dialogue manager: %w", err)
 	}
-	processor, err := newInputProcessor(normalizer, controlRouter, manager, log)
+	generationOptions, err := newGenerationOptions(cfg.LLM)
 	if err != nil {
-		return fmt.Errorf("создать input processor: %w", err)
+		return fmt.Errorf("проверить параметры генерации: %w", err)
+	}
+	responseHandler, err := newResponseHandler(os.Stdout)
+	if err != nil {
+		return fmt.Errorf("создать response handler: %w", err)
 	}
 	sttClient, err := newSTTClient(cfg.STT)
 	if err != nil {
 		return fmt.Errorf("создать STT client: %w", err)
+	}
+	generator, err := newLocalGenerator(ctx, cfg.LLM)
+	if err != nil {
+		return fmt.Errorf("загрузить локальную LLM: %w", err)
+	}
+	defer func() {
+		if err := generator.Close(); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("закрыть локальную LLM: %w", err))
+		}
+	}()
+	responder, err := assistant.NewResponder(manager, generator, generationOptions, responseHandler)
+	if err != nil {
+		return fmt.Errorf("создать responder: %w", err)
+	}
+	processor, err := newInputProcessor(normalizer, controlRouter, manager, responder.Handle, log)
+	if err != nil {
+		return fmt.Errorf("создать input processor: %w", err)
 	}
 	transcriber, err := newTranscriber(sttClient, log, processor)
 	if err != nil {

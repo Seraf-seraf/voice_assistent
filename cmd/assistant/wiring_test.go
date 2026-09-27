@@ -3,13 +3,20 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"log/slog"
+	"math"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Seraf-seraf/voice_assistent/internal/assistant"
 	"github.com/Seraf-seraf/voice_assistent/internal/audio"
 	"github.com/Seraf-seraf/voice_assistent/internal/config"
+	"github.com/Seraf-seraf/voice_assistent/internal/dialogue"
+	"github.com/Seraf-seraf/voice_assistent/internal/llm"
 	"github.com/Seraf-seraf/voice_assistent/internal/stt"
 	"github.com/Seraf-seraf/voice_assistent/internal/vad"
 )
@@ -84,6 +91,19 @@ type wiringSTTClient struct {
 	result stt.Transcript
 }
 
+type recordingGenerator struct {
+	requests    []llm.Request
+	generateErr error
+}
+
+func (g *recordingGenerator) Generate(_ context.Context, request llm.Request, emit llm.Emit) error {
+	g.requests = append(g.requests, request)
+	if g.generateErr != nil {
+		return g.generateErr
+	}
+	return emit(llm.TextDelta{Text: "Ответ " + strconv.Itoa(len(g.requests))})
+}
+
 func (c wiringSTTClient) Transcribe(context.Context, audio.Utterance) (stt.Transcript, error) {
 	return c.result, nil
 }
@@ -104,7 +124,7 @@ func TestTranscriberForwardsQueryAndLogsOnlyMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	processor, err := newInputProcessor(normalizer, controlRouter, manager, log)
+	processor, err := newInputProcessor(normalizer, controlRouter, manager, func(context.Context, assistant.Query) error { return nil }, log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,6 +149,101 @@ func TestTranscriberForwardsQueryAndLogsOnlyMetadata(t *testing.T) {
 	}
 	if len(manager.Snapshot().Messages) != 0 {
 		t.Fatal("input processing started a dialogue turn")
+	}
+}
+
+func TestTranscriberInputProcessorResponderAndOutputShareDialogueLifecycle(t *testing.T) {
+	var logs, output bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	cfg := config.Default()
+	normalizer, err := newTranscriptNormalizer(cfg.Transcript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlRouter, err := newControlRouter(cfg.App, cfg.Wake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := newDialogueManager(cfg.App, cfg.Dialogue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options, err := newGenerationOptions(cfg.LLM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseHandler, err := newResponseHandler(&output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generator := &recordingGenerator{}
+	responder, err := assistant.NewResponder(manager, generator, options, responseHandler)
+	if err != nil {
+		t.Fatal(err)
+	}
+	processor, err := newInputProcessor(normalizer, controlRouter, manager, responder.Handle, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := sequenceWiringSTT{results: map[uint64]stt.Transcript{
+		1: {Text: "первый вопрос"}, 2: {Text: "второй вопрос"},
+		3: {Text: "очисти историю"}, 4: {Text: "после очистки"},
+	}}
+	for _, id := range []uint64{1, 2} {
+		processOneUtterance(t, client, processor, id)
+	}
+	if len(generator.requests) != 2 {
+		t.Fatalf("generation calls=%d", len(generator.requests))
+	}
+	second := generator.requests[1].Dialogue.Messages
+	if len(second) != 3 || second[0].Role != dialogue.RoleUser || second[1].Role != dialogue.RoleAssistant || second[2].Content != "второй вопрос" {
+		t.Fatalf("second request history=%+v", second)
+	}
+	processOneUtterance(t, client, processor, 3)
+	if len(generator.requests) != 2 {
+		t.Fatal("reset command reached generator")
+	}
+	processOneUtterance(t, client, processor, 4)
+	if len(generator.requests) != 3 || len(generator.requests[2].Dialogue.Messages) != 1 || generator.requests[2].Dialogue.Messages[0].Content != "после очистки" {
+		t.Fatalf("post-reset request=%+v", generator.requests)
+	}
+	if got, want := output.String(), "Ассистент: Ответ 1\nАссистент: Ответ 2\nАссистент: Ответ 3\n"; got != want {
+		t.Fatalf("stdout=%q want=%q", got, want)
+	}
+	if strings.Contains(logs.String(), "вопрос") || strings.Contains(logs.String(), "Ответ") {
+		t.Fatalf("user or response text leaked to slog: %s", logs.String())
+	}
+}
+
+type sequenceWiringSTT struct{ results map[uint64]stt.Transcript }
+
+func (c sequenceWiringSTT) Transcribe(_ context.Context, utterance audio.Utterance) (stt.Transcript, error) {
+	return c.results[utterance.ID], nil
+}
+
+func processOneUtterance(t *testing.T, client stt.Client, processor *assistant.InputProcessor, id uint64) {
+	t.Helper()
+	transcriber, err := newTranscriber(client, slog.New(slog.NewTextHandler(io.Discard, nil)), processor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := transcriber.Handle(context.Background(), vad.SpeechEnded{Utterance: audio.Utterance{ID: id}}); err != nil {
+		t.Fatal(err)
+	}
+	transcriber.CloseInput()
+	if err := transcriber.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNewGenerationOptionsUsesLLMPortValidation(t *testing.T) {
+	cfg := config.Default().LLM
+	if _, err := newGenerationOptions(cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Temperature = math.NaN()
+	if _, err := newGenerationOptions(cfg); !errors.Is(err, llm.ErrInvalidOptions) {
+		t.Fatalf("NaN validation error=%v", err)
 	}
 }
 

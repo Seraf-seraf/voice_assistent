@@ -53,23 +53,30 @@ func (r *Runtime) Run(parent context.Context) error {
 	defer cancel()
 	listenerDone := make(chan error, 1)
 	pipelineDone := make(chan error, 1)
-	go func() { listenerDone <- r.listener.Run(ctx) }()
-	go func() { pipelineDone <- r.pipeline.Run(ctx) }()
+	go func() {
+		err := r.listener.Run(ctx)
+		if err != nil {
+			cancel()
+		}
+		listenerDone <- err
+	}()
+	go func() {
+		err := r.pipeline.Run(ctx)
+		cancel()
+		pipelineDone <- err
+	}()
 
 	listenerChannel, pipelineChannel := (<-chan error)(listenerDone), (<-chan error)(pipelineDone)
 	events := r.listener.Events()
 	var listenerErr, pipelineErr error
 	for {
 		select {
-		case <-parent.Done():
+		case <-ctx.Done():
 			cancel()
-			if listenerChannel != nil {
-				listenerErr = <-listenerChannel
-			}
-			if pipelineChannel != nil {
-				pipelineErr = <-pipelineChannel
-			}
-			return errors.Join(cleanupError("speech listener", listenerErr, parent.Err()), cleanupError("speech pipeline", pipelineErr, parent.Err()))
+			listenerErr, listenerChannel = awaitResult(listenerChannel, listenerErr)
+			pipelineErr, pipelineChannel = awaitResult(pipelineChannel, pipelineErr)
+			cancellation := ctx.Err()
+			return errors.Join(cleanupError("speech listener", listenerErr, cancellation), cleanupError("speech pipeline", pipelineErr, cancellation))
 		case event, open := <-events:
 			if !open {
 				events = nil
@@ -78,25 +85,31 @@ func (r *Runtime) Run(parent context.Context) error {
 					listenerChannel = nil
 					if listenerErr != nil {
 						cancel()
-						if pipelineChannel != nil {
-							pipelineErr = <-pipelineChannel
-						}
+						pipelineErr, pipelineChannel = awaitResult(pipelineChannel, pipelineErr)
 						return errors.Join(wrapError("speech listener", listenerErr), wrapError("speech pipeline", pipelineErr))
 					}
 				}
 				r.pipeline.CloseInput()
-				if pipelineChannel != nil {
-					pipelineErr = <-pipelineChannel
-				}
+				pipelineErr, pipelineChannel = awaitResult(pipelineChannel, pipelineErr)
 				return wrapError("speech pipeline", pipelineErr)
 			}
+			if ctx.Err() != nil {
+				listenerErr, listenerChannel = awaitResult(listenerChannel, listenerErr)
+				pipelineErr, pipelineChannel = awaitResult(pipelineChannel, pipelineErr)
+				cancellation := ctx.Err()
+				return errors.Join(cleanupError("speech listener", listenerErr, cancellation), cleanupError("speech pipeline", pipelineErr, cancellation))
+			}
 			if err := r.pipeline.Handle(ctx, event); err != nil {
+				wasCancelled := ctx.Err() != nil
 				cancel()
-				if listenerChannel != nil {
-					listenerErr = <-listenerChannel
-				}
-				if pipelineChannel != nil {
-					pipelineErr = <-pipelineChannel
+				listenerErr, listenerChannel = awaitResult(listenerChannel, listenerErr)
+				pipelineErr, pipelineChannel = awaitResult(pipelineChannel, pipelineErr)
+				if cancellation := ctx.Err(); wasCancelled && cancellation != nil {
+					return errors.Join(
+						cleanupError("передать speech event", err, cancellation),
+						cleanupError("speech listener", listenerErr, cancellation),
+						cleanupError("speech pipeline", pipelineErr, cancellation),
+					)
 				}
 				return errors.Join(fmt.Errorf("передать speech event: %w", err), wrapError("speech listener", listenerErr), wrapError("speech pipeline", pipelineErr))
 			}
@@ -105,9 +118,7 @@ func (r *Runtime) Run(parent context.Context) error {
 			listenerErr = err
 			if err != nil {
 				cancel()
-				if pipelineChannel != nil {
-					pipelineErr = <-pipelineChannel
-				}
+				pipelineErr, pipelineChannel = awaitResult(pipelineChannel, pipelineErr)
 				return errors.Join(wrapError("speech listener", err), wrapError("speech pipeline", pipelineErr))
 			}
 			// Events are closed by the listener after Run returns; keep draining them.
@@ -116,26 +127,54 @@ func (r *Runtime) Run(parent context.Context) error {
 			pipelineErr = err
 			if err != nil {
 				cancel()
-				if listenerChannel != nil {
-					listenerErr = <-listenerChannel
-				}
+				listenerErr, listenerChannel = awaitResult(listenerChannel, listenerErr)
 				return errors.Join(wrapError("speech pipeline", err), wrapError("speech listener", listenerErr))
 			}
 			// A normally completed pipeline cannot accept further events.
 			cancel()
-			if listenerChannel != nil {
-				listenerErr = <-listenerChannel
-			}
+			listenerErr, listenerChannel = awaitResult(listenerChannel, listenerErr)
 			return wrapError("speech listener", listenerErr)
 		}
 	}
 }
 
 func cleanupError(name string, err, cancellation error) error {
-	if err == nil || errors.Is(err, cancellation) {
+	if err == nil || cancellationOnly(err, cancellation) {
 		return nil
 	}
 	return wrapError(name, err)
+}
+
+func cancellationOnly(err, cancellation error) bool {
+	if err == nil || cancellation == nil {
+		return false
+	}
+	if many, ok := err.(interface{ Unwrap() []error }); ok {
+		children := many.Unwrap()
+		if len(children) == 0 {
+			return err == cancellation
+		}
+		for _, child := range children {
+			if child != nil && !cancellationOnly(child, cancellation) {
+				return false
+			}
+		}
+		return true
+	}
+	if one, ok := err.(interface{ Unwrap() error }); ok {
+		child := one.Unwrap()
+		if child != nil {
+			return cancellationOnly(child, cancellation)
+		}
+	}
+	return err == cancellation
+}
+
+func awaitResult(channel <-chan error, current error) (error, <-chan error) {
+	if channel == nil {
+		return current, nil
+	}
+	return <-channel, nil
 }
 
 func wrapError(name string, err error) error {

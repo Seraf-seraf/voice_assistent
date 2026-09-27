@@ -3,11 +3,14 @@ package assistant
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/Seraf-seraf/voice_assistent/internal/audio"
+	"github.com/Seraf-seraf/voice_assistent/internal/stt"
 	"github.com/Seraf-seraf/voice_assistent/internal/vad"
 )
 
@@ -156,6 +159,19 @@ func TestRuntimeListenerErrorCancelsPipeline(t *testing.T) {
 	}
 }
 
+func TestRuntimePreservesPipelineLocalDeadline(t *testing.T) {
+	listener := newFakeListener(func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() })
+	pipeline := newFakePipeline()
+	pipeline.run = func(context.Context) error { return context.DeadlineExceeded }
+	runtime, err := NewRuntime(listener, pipeline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Run(context.Background()); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Run()=%v, want local model deadline", err)
+	}
+}
+
 func TestRuntimeHandleErrorCancelsAndJoinsIndependentErrors(t *testing.T) {
 	handleErr, pipelineErr, listenerErr := errors.New("handle failed"), errors.New("pipeline shutdown"), errors.New("listener shutdown")
 	listener := newFakeListener(func(ctx context.Context) error { <-ctx.Done(); return listenerErr }, vad.SpeechStarted{})
@@ -189,5 +205,248 @@ func TestNewRuntimeRejectsNilDependencies(t *testing.T) {
 	var nilPipeline *fakePipeline
 	if _, err := NewRuntime(listener, nilPipeline); err == nil {
 		t.Fatal("typed nil pipeline accepted")
+	}
+}
+
+type observingPipeline struct {
+	*Transcriber
+	thirdHandle chan struct{}
+	thirdID     uint64
+}
+
+func (p *observingPipeline) Handle(ctx context.Context, event vad.Event) error {
+	targetID := p.thirdID
+	if targetID == 0 {
+		targetID = 3
+	}
+	if ended, ok := event.(vad.SpeechEnded); ok && ended.Utterance.ID == targetID {
+		close(p.thirdHandle)
+	}
+	return p.Transcriber.Handle(ctx, event)
+}
+
+func TestRuntimePipelineFailureUnblocksBackpressuredTranscriber(t *testing.T) {
+	pipelineErr := errors.New("whisper failed")
+	transcribeStarted := make(chan struct{})
+	releaseTranscribe := make(chan struct{})
+	transcriber, err := NewTranscriber(fakeSTTClient{transcribe: func(context.Context, audio.Utterance) (stt.Transcript, error) {
+		close(transcribeStarted)
+		<-releaseTranscribe
+		return stt.Transcript{}, pipelineErr
+	}}, func(context.Context, Transcription) error { return nil }, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pipeline := &observingPipeline{Transcriber: transcriber, thirdHandle: make(chan struct{})}
+	listener := newFakeListener(func(context.Context) error { return nil },
+		vad.SpeechEnded{Utterance: audio.Utterance{ID: 1}},
+		vad.SpeechEnded{Utterance: audio.Utterance{ID: 2}},
+		vad.SpeechEnded{Utterance: audio.Utterance{ID: 3}},
+	)
+	runtime, err := NewRuntime(listener, pipeline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- runtime.Run(ctx) }()
+	select {
+	case <-transcribeStarted:
+	case <-time.After(time.Second):
+		close(releaseTranscribe)
+		cancel()
+		waitRuntime(t, done)
+		t.Fatal("STT did not start")
+	}
+	select {
+	case <-pipeline.thirdHandle:
+	case <-time.After(time.Second):
+		close(releaseTranscribe)
+		cancel()
+		waitRuntime(t, done)
+		t.Fatal("third event was not delivered")
+	}
+	close(releaseTranscribe)
+	select {
+	case err := <-done:
+		if !errors.Is(err, pipelineErr) {
+			t.Fatalf("Run()=%v, want pipeline failure", err)
+		}
+	case <-time.After(time.Second):
+		cancel()
+		waitRuntime(t, done)
+		t.Fatal("Runtime remained blocked on the full transcription queue")
+	}
+}
+
+func TestRuntimeParentCancellationUnblocksBackpressuredTranscriber(t *testing.T) {
+	transcribeStarted := make(chan struct{})
+	transcriber, err := NewTranscriber(fakeSTTClient{transcribe: func(ctx context.Context, _ audio.Utterance) (stt.Transcript, error) {
+		close(transcribeStarted)
+		<-ctx.Done()
+		return stt.Transcript{}, ctx.Err()
+	}}, func(context.Context, Transcription) error { return nil }, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pipeline := &observingPipeline{Transcriber: transcriber, thirdHandle: make(chan struct{}), thirdID: 13}
+	listener := newFakeListener(func(context.Context) error { return nil },
+		vad.SpeechEnded{Utterance: audio.Utterance{ID: 11}},
+		vad.SpeechEnded{Utterance: audio.Utterance{ID: 12}},
+		vad.SpeechEnded{Utterance: audio.Utterance{ID: 13}},
+	)
+	runtime, err := NewRuntime(listener, pipeline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runtime.Run(ctx) }()
+	select {
+	case <-transcribeStarted:
+	case <-time.After(time.Second):
+		cancel()
+		waitRuntime(t, done)
+		t.Fatal("STT did not start")
+	}
+	select {
+	case <-pipeline.thirdHandle:
+	case <-time.After(time.Second):
+		cancel()
+		waitRuntime(t, done)
+		t.Fatal("third event was not delivered")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("pure parent cancellation returned %v", err)
+		}
+	case <-time.After(time.Second):
+		cancel()
+		waitRuntime(t, done)
+		t.Fatal("Runtime remained blocked after parent cancellation")
+	}
+}
+
+type gatedFailingListener struct {
+	events  chan vad.Event
+	release chan struct{}
+	err     error
+}
+
+func (l *gatedFailingListener) Run(ctx context.Context) error {
+	defer close(l.events)
+	select {
+	case <-l.release:
+		return l.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+func (l *gatedFailingListener) Events() <-chan vad.Event { return l.events }
+
+func waitRuntime(t *testing.T, done <-chan error) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Runtime goroutine did not exit after cancellation")
+	}
+}
+
+func TestRuntimeListenerFailureUnblocksBackpressuredTranscriber(t *testing.T) {
+	listenerErr := errors.New("listener failed while closing")
+	transcribeStarted := make(chan struct{})
+	transcriber, err := NewTranscriber(fakeSTTClient{transcribe: func(ctx context.Context, _ audio.Utterance) (stt.Transcript, error) {
+		close(transcribeStarted)
+		<-ctx.Done()
+		return stt.Transcript{}, ctx.Err()
+	}}, func(context.Context, Transcription) error { return nil }, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thirdHandle := make(chan struct{})
+	pipeline := &observingPipeline{Transcriber: transcriber, thirdHandle: thirdHandle}
+	listener := &gatedFailingListener{
+		events: make(chan vad.Event, 3), release: make(chan struct{}), err: listenerErr,
+	}
+	for id := uint64(1); id <= 3; id++ {
+		listener.events <- vad.SpeechEnded{Utterance: audio.Utterance{ID: id}}
+	}
+	runtime, err := NewRuntime(listener, pipeline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- runtime.Run(ctx) }()
+	select {
+	case <-transcribeStarted:
+	case <-time.After(time.Second):
+		cancel()
+		<-done
+		t.Fatal("STT did not start")
+	}
+	select {
+	case <-thirdHandle:
+	case <-time.After(time.Second):
+		cancel()
+		<-done
+		t.Fatal("third event was not delivered")
+	}
+	close(listener.release)
+	select {
+	case err := <-done:
+		if !errors.Is(err, listenerErr) {
+			t.Fatalf("Run()=%v, want listener error", err)
+		}
+	case <-time.After(time.Second):
+		cancel()
+		<-done
+		t.Fatal("listener failure did not unblock event delivery")
+	}
+}
+
+func TestRuntimeDrainsRealTranscriberAtListenerEOF(t *testing.T) {
+	var received []uint64
+	transcriber, err := NewTranscriber(fakeSTTClient{transcribe: func(_ context.Context, utterance audio.Utterance) (stt.Transcript, error) {
+		return stt.Transcript{Text: "ok"}, nil
+	}}, func(_ context.Context, result Transcription) error {
+		received = append(received, result.UtteranceID)
+		return nil
+	}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener := newFakeListener(func(context.Context) error { return nil },
+		vad.SpeechEnded{Utterance: audio.Utterance{ID: 21}},
+		vad.SpeechEnded{Utterance: audio.Utterance{ID: 22}},
+		vad.SpeechEnded{Utterance: audio.Utterance{ID: 23}},
+	)
+	runtime, err := NewRuntime(listener, transcriber)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(received, []uint64{21, 22, 23}) {
+		t.Fatalf("received=%v", received)
+	}
+}
+
+func TestCleanupErrorSuppressesOnlyPureSharedCancellation(t *testing.T) {
+	cleanupFailure := errors.New("cleanup failed")
+	if got := cleanupError("component", errors.Join(context.Canceled, cleanupFailure), context.Canceled); !errors.Is(got, cleanupFailure) {
+		t.Fatalf("mixed cancellation lost cleanup failure: %v", got)
+	}
+	if got := cleanupError("component", fmt.Errorf("local timeout: %w", context.DeadlineExceeded), context.Canceled); !errors.Is(got, context.DeadlineExceeded) {
+		t.Fatalf("local deadline suppressed: %v", got)
+	}
+	if got := cleanupError("component", fmt.Errorf("shutdown: %w", context.Canceled), context.Canceled); got != nil {
+		t.Fatalf("pure shared cancellation returned %v", got)
 	}
 }
