@@ -123,9 +123,33 @@ ASSISTANT_PLAYBACK_TEST_DEVICE="hw:0,0" make test-playback-integration
 ```
 
 Подтвердите звук вручную на выбранном endpoint. Перед использованием микрофона
-проверьте сценарий в наушниках: echo cancellation и barge-in пока отсутствуют,
-поэтому микрофон может повторно захватить голос из колонок. Скрытого отключения
-микрофона нет.
+проверьте сценарий в наушниках. Подтверждённая новая речь отменяет текущий ответ
+без остановки приложения; старый handler должен завершить cleanup до следующего
+ответа. Команда «стоп» сначала прерывает ответ по событию речи, затем поглощается
+router без новой генерации. В историю остаётся непрерывный префикс фраз с успешным
+возвратом Player.Play после drain. Это подтверждение ALSA backend, а не точная
+оценка физически услышанных слов. Echo cancellation отсутствует, поэтому микрофон
+может повторно захватить голос из колонок; полноценный global PTT не входит в этот
+этап.
+
+Проверки interrupt и общие gates:
+
+```bash
+go test ./internal/assistant ./internal/dialogue -count=1
+go test ./internal/llm/llamacpp ./internal/tts/sherpa ./internal/audio/output/alsa ./cmd/assistant -count=1
+go test -race ./internal/assistant -count=10
+make test
+make test-race
+make lint
+make build
+make test-llamacpp-integration
+make test-tts-integration
+make test-playback-integration
+```
+
+Три последних команды требуют уже настроенных GGUF/native-библиотек, TTS assets и
+выбранного ALSA endpoint. Они не загружают модели автоматически. Playback gate
+воспроизводит тихий сигнал на выбранном устройстве.
 
 При ручной проверке полного assistant используйте запрос из двух-трёх коротких
 предложений. Зафиксируйте наблюдённые моменты первой видимой текстовой дельты,
