@@ -4,7 +4,7 @@ ARG WHISPER_CPP_REF=master
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt update && apt install -y --no-install-recommends \
     git \
     cmake \
     build-essential \
@@ -21,6 +21,7 @@ WORKDIR /opt/whisper.cpp
 RUN cmake -B build \
     -DGGML_CUDA=ON \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_EXE_LINKER_FLAGS="-Wl,--no-as-needed -L/usr/local/cuda/lib64/stubs -lcuda" \
     && cmake --build build --config Release -j"$(nproc)"
 
 RUN mkdir -p /models
