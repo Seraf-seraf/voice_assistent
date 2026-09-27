@@ -28,6 +28,7 @@ type recordingResponseSink struct {
 	pushFunc      func(context.Context, ResponseDelta) error
 	completeFunc  func(context.Context, Response) error
 	abortFunc     func(context.Context, ResponseAbort) error
+	abortResult   ResponseAbortResult
 }
 
 func (s *recordingResponseSink) Push(ctx context.Context, delta ResponseDelta) error {
@@ -46,13 +47,16 @@ func (s *recordingResponseSink) Complete(ctx context.Context, response Response)
 	return nil
 }
 
-func (s *recordingResponseSink) Abort(ctx context.Context, abort ResponseAbort) error {
+func (s *recordingResponseSink) Abort(ctx context.Context, abort ResponseAbort) (ResponseAbortResult, error) {
 	s.aborts = append(s.aborts, abort)
 	s.abortContexts = append(s.abortContexts, ctx)
 	if s.abortFunc != nil {
-		return s.abortFunc(ctx, abort)
+		return s.abortResult, s.abortFunc(ctx, abort)
 	}
-	return nil
+	if s.abortResult != (ResponseAbortResult{}) {
+		return s.abortResult, nil
+	}
+	return ResponseAbortResult{UtteranceID: abort.UtteranceID, TurnID: abort.TurnID}, nil
 }
 
 func newResponderWithComplete(t *testing.T, manager *dialogue.Manager, generator llm.Generator, options llm.Options, complete func(context.Context, Response) error) (*Responder, *recordingResponseSink) {
@@ -209,6 +213,94 @@ func TestResponderBuffersOnlyTrailingWhitespaceUntilNextText(t *testing.T) {
 	}
 }
 
+func TestResponderRecordsOnlyConfirmedPrefixOnSpeechInterrupt(t *testing.T) {
+	manager := newResponderTestManager(t)
+	started := make(chan struct{})
+	generator := fakeGenerator{generate: func(ctx context.Context, _ llm.Request, emit llm.Emit) error {
+		if err := emit(llm.TextDelta{Text: "Первое предложение. Второе."}); err != nil {
+			return err
+		}
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	}}
+	sink := &recordingResponseSink{abortResult: ResponseAbortResult{UtteranceID: 7, TurnID: 1, PlayedText: "Первое предложение."}}
+	responder, err := NewResponder(manager, generator, llm.Options{Temperature: 0.4, MaxTokens: 20}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancelCause(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- responder.Handle(ctx, Query{UtteranceID: 7, Text: "вопрос"}) }()
+	<-started
+	cancel(ErrSpeechInterrupted)
+	if err := <-done; !errors.Is(err, ErrSpeechInterrupted) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("ошибка Handle()=%v, ожидались причина прерывания и отменённый контекст", err)
+	}
+	want := []dialogue.Message{{Role: dialogue.RoleUser, Content: "вопрос"}, {Role: dialogue.RoleAssistant, Content: "Первое предложение."}}
+	if !reflect.DeepEqual(manager.Snapshot().Messages, want) {
+		t.Fatalf("история=%+v, ожидалась %+v", manager.Snapshot().Messages, want)
+	}
+	if len(sink.aborts) != 1 || len(sink.completes) != 0 {
+		t.Fatalf("отмен вывода=%d, завершений вывода=%d", len(sink.aborts), len(sink.completes))
+	}
+}
+
+func TestResponderRejectsInvalidAbortProgressAndDoesNotRecordIt(t *testing.T) {
+	for _, result := range []ResponseAbortResult{
+		{UtteranceID: 99, TurnID: 1, PlayedText: "префикс"},
+		{UtteranceID: 1, TurnID: 1, PlayedText: "\xff"},
+		{UtteranceID: 1, TurnID: 1, PlayedText: "не префикс"},
+	} {
+		manager := newResponderTestManager(t)
+		started := make(chan struct{})
+		generator := fakeGenerator{generate: func(ctx context.Context, _ llm.Request, emit llm.Emit) error {
+			close(started)
+			if err := emit(llm.TextDelta{Text: "сгенерированный ответ"}); err != nil {
+				return err
+			}
+			<-ctx.Done()
+			return ctx.Err()
+		}}
+		sink := &recordingResponseSink{abortResult: result}
+		responder, err := NewResponder(manager, generator, llm.Options{Temperature: 0.4, MaxTokens: 20}, sink)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancelCause(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- responder.Handle(ctx, Query{UtteranceID: 1, Text: "вопрос"}) }()
+		<-started
+		cancel(ErrSpeechInterrupted)
+		if err := <-done; !errors.Is(err, ErrInvalidResponseProgress) {
+			t.Fatalf("ошибка Handle()=%v, ожидалась недостоверная квитанция", err)
+		}
+		if got := manager.Snapshot().Messages; len(got) != 1 || got[0].Role != dialogue.RoleUser {
+			t.Fatalf("недостоверная квитанция изменила историю: %+v", got)
+		}
+	}
+}
+
+func TestResponderOrdinaryFailureAbortsTurnWithoutRecordingOutput(t *testing.T) {
+	manager := newResponderTestManager(t)
+	generateErr := errors.New("сбой генерации")
+	responder, sink := newResponderWithComplete(t, manager, fakeGenerator{generate: func(_ context.Context, _ llm.Request, emit llm.Emit) error {
+		if err := emit(llm.TextDelta{Text: "partial"}); err != nil {
+			return err
+		}
+		return generateErr
+	}}, llm.Options{Temperature: 0.4, MaxTokens: 20}, nil)
+	if err := responder.Handle(context.Background(), Query{UtteranceID: 1, Text: "вопрос"}); !errors.Is(err, generateErr) {
+		t.Fatalf("ошибка Handle()=%v, ожидалась ошибка генерации", err)
+	}
+	if got := manager.Snapshot().Messages; len(got) != 1 || got[0].Role != dialogue.RoleUser {
+		t.Fatalf("обычная ошибка записала ответ ассистента: %+v", got)
+	}
+	if len(sink.aborts) != 1 || len(sink.completes) != 0 {
+		t.Fatalf("отмен вывода=%d, завершений вывода=%d", len(sink.aborts), len(sink.completes))
+	}
+}
+
 func TestResponderUsesTurnIDAndCompletesBeforeNextRequest(t *testing.T) {
 	manager := newResponderTestManager(t)
 	var requests []llm.Request
@@ -262,7 +354,7 @@ func TestResponderAbortsTurnAfterGenerationErrors(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			manager := newResponderTestManager(t)
-			generationErr := errors.New("generation failed")
+			generationErr := errors.New("ошибка генерации")
 			calls := 0
 			generator := fakeGenerator{generate: func(_ context.Context, _ llm.Request, emit llm.Emit) error {
 				calls++
@@ -329,7 +421,7 @@ func TestResponderRejectsEmptyGeneratedResponse(t *testing.T) {
 
 func TestResponderAbortsWhenSinkCompleteFails(t *testing.T) {
 	manager := newResponderTestManager(t)
-	handlerErr := errors.New("consumer rejected response")
+	handlerErr := errors.New("приёмник отклонил ответ")
 	generator := fakeGenerator{generate: func(_ context.Context, _ llm.Request, emit llm.Emit) error {
 		return emit(llm.TextDelta{Text: "answer"})
 	}}
@@ -350,7 +442,7 @@ func TestResponderAbortsWhenSinkCompleteFails(t *testing.T) {
 
 func TestResponderAbortsWhenSinkPushFails(t *testing.T) {
 	manager := newResponderTestManager(t)
-	pushErr := errors.New("output failed")
+	pushErr := errors.New("ошибка вывода")
 	generator := fakeGenerator{generate: func(_ context.Context, _ llm.Request, emit llm.Emit) error {
 		return emit(llm.TextDelta{Text: "answer"})
 	}}
@@ -372,8 +464,8 @@ func TestResponderAbortsWhenSinkPushFails(t *testing.T) {
 
 func TestResponderPreservesGenerationAndSinkAbortErrors(t *testing.T) {
 	manager := newResponderTestManager(t)
-	generationErr := errors.New("generation failed")
-	abortErr := errors.New("output cleanup failed")
+	generationErr := errors.New("ошибка генерации")
+	abortErr := errors.New("ошибка очистки вывода")
 	generator := fakeGenerator{generate: func(context.Context, llm.Request, llm.Emit) error { return generationErr }}
 	sink := &recordingResponseSink{abortFunc: func(context.Context, ResponseAbort) error { return abortErr }}
 	responder, err := NewResponder(manager, generator, llm.Options{Temperature: 0, MaxTokens: 1}, sink)

@@ -52,6 +52,21 @@ type speechTestPlayer struct {
 	err            error
 }
 
+type interruptSpeechPlayer struct {
+	calls   atomic.Int32
+	started chan int32
+}
+
+func (p *interruptSpeechPlayer) Play(ctx context.Context, _ audio.PCM) error {
+	call := p.calls.Add(1)
+	p.started <- call
+	if call == 2 {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return nil
+}
+
 func (p *speechTestPlayer) Play(ctx context.Context, pcm audio.PCM) error {
 	p.calls.Add(1)
 	p.started <- append([]float32(nil), pcm.Samples...)
@@ -236,7 +251,7 @@ func TestSpokenResponseSinkEnforcesRuneBudgetBeforeForwardingOverflow(t *testing
 	if len(textSink.pushes) != 1 {
 		t.Fatalf("console received %d pushes after overflow", len(textSink.pushes))
 	}
-	if err := spoken.Abort(context.Background(), ResponseAbort{UtteranceID: 5, TurnID: 6}); err != nil {
+	if _, err := spoken.Abort(context.Background(), ResponseAbort{UtteranceID: 5, TurnID: 6}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -255,16 +270,16 @@ func TestSpokenResponseSinkRejectsMismatchAndAbortDropsTail(t *testing.T) {
 	if err := spoken.Complete(context.Background(), Response{UtteranceID: 7, TurnID: 8, Text: "другой текст"}); !errors.Is(err, ErrSpeechTextMismatch) {
 		t.Fatalf("mismatched Complete() error = %v", err)
 	}
-	if err := spoken.Abort(context.Background(), ResponseAbort{UtteranceID: 70, TurnID: 80}); !errors.Is(err, ErrSpeechState) {
+	if _, err := spoken.Abort(context.Background(), ResponseAbort{UtteranceID: 70, TurnID: 80}); !errors.Is(err, ErrSpeechState) {
 		t.Fatalf("foreign Abort() error = %v", err)
 	}
-	if err := spoken.Abort(context.Background(), ResponseAbort{UtteranceID: 7, TurnID: 8}); err != nil {
+	if _, err := spoken.Abort(context.Background(), ResponseAbort{UtteranceID: 7, TurnID: 8}); err != nil {
 		t.Fatal(err)
 	}
 	if synth.calls.Load() != 0 || len(textSink.aborts) != 1 {
 		t.Fatalf("synth calls=%d text aborts=%d", synth.calls.Load(), len(textSink.aborts))
 	}
-	if err := spoken.Abort(context.Background(), ResponseAbort{UtteranceID: 7, TurnID: 8}); err != nil {
+	if _, err := spoken.Abort(context.Background(), ResponseAbort{UtteranceID: 7, TurnID: 8}); err != nil {
 		t.Fatalf("repeated Abort() error = %v", err)
 	}
 	if err := spoken.Push(context.Background(), ResponseDelta{UtteranceID: 9, TurnID: 10, Text: "Новый ответ.\n"}); err != nil {
@@ -279,7 +294,7 @@ func TestSpokenResponseSinkRejectsMismatchAndAbortDropsTail(t *testing.T) {
 }
 
 func TestSpokenResponseSinkAbortWaitsForCurrentPlaybackAndKeepsErrors(t *testing.T) {
-	cleanupErr := errors.New("cleanup failed")
+	cleanupErr := errors.New("ошибка очистки")
 	textSink := &recordingResponseSink{abortFunc: func(context.Context, ResponseAbort) error {
 		return cleanupErr
 	}}
@@ -297,19 +312,24 @@ func TestSpokenResponseSinkAbortWaitsForCurrentPlaybackAndKeepsErrors(t *testing
 		t.Fatal(err)
 	}
 	<-player.started
-	abortDone := make(chan error, 1)
+	type abortOutcome struct {
+		result ResponseAbortResult
+		err    error
+	}
+	abortDone := make(chan abortOutcome, 1)
 	go func() {
-		abortDone <- spoken.Abort(context.Background(), ResponseAbort{UtteranceID: 20, TurnID: 21})
+		result, err := spoken.Abort(context.Background(), ResponseAbort{UtteranceID: 20, TurnID: 21})
+		abortDone <- abortOutcome{result: result, err: err}
 	}()
 	<-player.cancelObserved
 	select {
-	case err := <-abortDone:
-		t.Fatalf("Abort returned before fake playback boundary: %v", err)
+	case outcome := <-abortDone:
+		t.Fatalf("Abort вернулся до завершения тестового воспроизведения: %v", outcome.err)
 	default:
 	}
 	close(playGate)
-	if err := <-abortDone; !errors.Is(err, cleanupErr) {
-		t.Fatalf("Abort() error = %v, want console cleanup error", err)
+	if outcome := <-abortDone; !errors.Is(outcome.err, cleanupErr) || outcome.result.PlayedText != "Фраза.\n" {
+		t.Fatalf("Abort() = %+v, %v; ожидались подтверждённая фраза и ошибка очистки консольного вывода", outcome.result, outcome.err)
 	}
 	if err := spoken.Push(context.Background(), ResponseDelta{UtteranceID: 22, TurnID: 23, Text: "Следующая фраза.\n"}); err != nil {
 		t.Fatal(err)
@@ -322,9 +342,62 @@ func TestSpokenResponseSinkAbortWaitsForCurrentPlaybackAndKeepsErrors(t *testing
 	}
 }
 
+func TestSpokenResponseSinkAbortReturnsOnlyFullyPlayedPrefix(t *testing.T) {
+	textSink := &recordingResponseSink{}
+	synth := &speechTestSynth{texts: make(chan string, 4)}
+	player := &interruptSpeechPlayer{started: make(chan int32, 4)}
+	spoken, err := NewSpokenResponseSink(textSink, synth, player, SpeechOptions{Timeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseText := "Первое. Второе. Третье."
+	if err := spoken.Push(context.Background(), ResponseDelta{UtteranceID: 40, TurnID: 41, Text: responseText}); err != nil {
+		t.Fatal(err)
+	}
+	if call := <-player.started; call != 1 {
+		t.Fatalf("номер первого вызова воспроизведения: %d", call)
+	}
+	if call := <-player.started; call != 2 {
+		t.Fatalf("номер второго вызова воспроизведения: %d", call)
+	}
+	result, err := spoken.Abort(context.Background(), ResponseAbort{UtteranceID: 40, TurnID: 41})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PlayedText != "Первое. " {
+		t.Fatalf("подтверждённое воспроизведение=%q, ожидалась первая raw-фраза целиком", result.PlayedText)
+	}
+	if !strings.HasPrefix(responseText, result.PlayedText) || synth.calls.Load() != 2 || player.calls.Load() != 2 {
+		t.Fatalf("префикс=%q, вызовов синтеза=%d, вызовов воспроизведения=%d", result.PlayedText, synth.calls.Load(), player.calls.Load())
+	}
+}
+
+func TestSpokenResponseSinkProgressConcatenatesLimitSplitWithoutAddedSpace(t *testing.T) {
+	textSink := &recordingResponseSink{}
+	synth := &speechTestSynth{texts: make(chan string, 4)}
+	player := &speechTestPlayer{started: make(chan []float32, 4)}
+	spoken, err := NewSpokenResponseSink(textSink, synth, player, SpeechOptions{Timeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Repeat("я", 200) + "я. "
+	if err := spoken.Push(context.Background(), ResponseDelta{UtteranceID: 50, TurnID: 51, Text: text}); err != nil {
+		t.Fatal(err)
+	}
+	<-player.started
+	<-player.started
+	result, err := spoken.Abort(context.Background(), ResponseAbort{UtteranceID: 50, TurnID: 51})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PlayedText != text {
+		t.Fatalf("подтверждённый raw-префикс=%q, ожидался %q", result.PlayedText, text)
+	}
+}
+
 func TestSpokenResponseSinkAbortJoinsNativeAndConsoleErrors(t *testing.T) {
-	synthErr := errors.New("native inference failed during cancellation")
-	cleanupErr := errors.New("console cleanup failed")
+	synthErr := errors.New("ошибка нативного синтеза при отмене")
+	cleanupErr := errors.New("ошибка очистки консольного вывода")
 	textSink := &recordingResponseSink{abortFunc: func(context.Context, ResponseAbort) error { return cleanupErr }}
 	synth := &speechTestSynth{
 		texts: make(chan string, 1), started: make(chan struct{}), waitForCancel: true, err: synthErr,
@@ -338,14 +411,29 @@ func TestSpokenResponseSinkAbortJoinsNativeAndConsoleErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-synth.started
-	err = spoken.Abort(context.Background(), ResponseAbort{UtteranceID: 30, TurnID: 31})
+	_, err = spoken.Abort(context.Background(), ResponseAbort{UtteranceID: 30, TurnID: 31})
 	if !errors.Is(err, synthErr) || !errors.Is(err, cleanupErr) {
 		t.Fatalf("Abort() error = %v, want both independent failures", err)
+	}
+	if player.calls.Load() != 0 {
+		t.Fatalf("отменённый PCM передан в Play %d раз", player.calls.Load())
+	}
+	synth.waitForCancel = false
+	synth.err = nil
+	synth.started = nil
+	if err := spoken.Push(context.Background(), ResponseDelta{UtteranceID: 32, TurnID: 33, Text: "Следующая фраза.\n"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := spoken.Complete(context.Background(), Response{UtteranceID: 32, TurnID: 33, Text: "Следующая фраза.\n"}); err != nil {
+		t.Fatalf("следующая сессия после отменённого синтеза: %v", err)
+	}
+	if player.calls.Load() != 1 {
+		t.Fatalf("после безопасного возврата synth Play вызван %d раз", player.calls.Load())
 	}
 }
 
 func TestSpokenResponseSinkPropagatesTextAndAudioFailures(t *testing.T) {
-	consolePushErr := errors.New("console push failed")
+	consolePushErr := errors.New("ошибка передачи текста в консоль")
 	t.Run("console push", func(t *testing.T) {
 		textSink := &recordingResponseSink{pushFunc: func(context.Context, ResponseDelta) error { return consolePushErr }}
 		synth := &speechTestSynth{texts: make(chan string, 1)}
@@ -357,7 +445,7 @@ func TestSpokenResponseSinkPropagatesTextAndAudioFailures(t *testing.T) {
 		if err := spoken.Push(context.Background(), ResponseDelta{UtteranceID: 1, TurnID: 2, Text: "Фраза.\n"}); !errors.Is(err, consolePushErr) {
 			t.Fatalf("Push() error = %v", err)
 		}
-		if err := spoken.Abort(context.Background(), ResponseAbort{UtteranceID: 1, TurnID: 2}); err != nil {
+		if _, err := spoken.Abort(context.Background(), ResponseAbort{UtteranceID: 1, TurnID: 2}); err != nil {
 			t.Fatal(err)
 		}
 		if synth.calls.Load() != 0 {
@@ -365,7 +453,7 @@ func TestSpokenResponseSinkPropagatesTextAndAudioFailures(t *testing.T) {
 		}
 	})
 
-	consoleCompleteErr := errors.New("console complete failed")
+	consoleCompleteErr := errors.New("ошибка завершения консольного вывода")
 	t.Run("console complete", func(t *testing.T) {
 		textSink := &recordingResponseSink{completeFunc: func(context.Context, Response) error { return consoleCompleteErr }}
 		synth := &speechTestSynth{texts: make(chan string, 1)}
@@ -384,7 +472,7 @@ func TestSpokenResponseSinkPropagatesTextAndAudioFailures(t *testing.T) {
 		if len(textSink.completes) != 1 || synth.calls.Load() != 1 || player.calls.Load() != 1 {
 			t.Fatalf("console completes=%d synth=%d play=%d", len(textSink.completes), synth.calls.Load(), player.calls.Load())
 		}
-		if err := spoken.Abort(context.Background(), ResponseAbort{UtteranceID: 3, TurnID: 4}); err != nil {
+		if _, err := spoken.Abort(context.Background(), ResponseAbort{UtteranceID: 3, TurnID: 4}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -394,8 +482,8 @@ func TestSpokenResponseSinkPropagatesTextAndAudioFailures(t *testing.T) {
 		playerErr    error
 		synthesisErr error
 	}{
-		{name: "synthesis", synthesisErr: errors.New("synthesis failed")},
-		{name: "playback", playerErr: errors.New("playback failed")},
+		{name: "синтез", synthesisErr: errors.New("ошибка синтеза")},
+		{name: "воспроизведение", playerErr: errors.New("ошибка воспроизведения")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			textSink := &recordingResponseSink{}
@@ -426,7 +514,7 @@ func TestSpokenResponseSinkPropagatesTextAndAudioFailures(t *testing.T) {
 			if len(textSink.completes) != 0 {
 				t.Fatal("audio failure was accepted as completed response")
 			}
-			if err := spoken.Abort(context.Background(), ResponseAbort{UtteranceID: 5, TurnID: 6}); err != nil {
+			if _, err := spoken.Abort(context.Background(), ResponseAbort{UtteranceID: 5, TurnID: 6}); err != nil {
 				t.Fatalf("Abort repeated or lost worker error: %v", err)
 			}
 		})

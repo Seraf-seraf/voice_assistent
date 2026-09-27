@@ -12,6 +12,14 @@ import (
 	"github.com/Seraf-seraf/voice_assistent/internal/vad"
 )
 
+const maxInputGeneration uint64 = ^uint64(0)
+
+var (
+	ErrTranscriptionInputClosed = errors.New("вход транскрипции закрыт")
+	ErrTranscriptionQueueFull   = errors.New("очередь транскрипции заполнена")
+	ErrTranscriptionGeneration  = errors.New("исчерпан счётчик поколений речи")
+)
+
 type Transcription struct {
 	UtteranceID uint64
 	Text        string
@@ -20,11 +28,25 @@ type Transcription struct {
 
 type TranscriptionHandler func(context.Context, Transcription) error
 
+type transcriptionJob struct {
+	generation uint64
+	utterance  audio.Utterance
+}
+
+type activeTranscription struct {
+	generation uint64
+	cancel     context.CancelCauseFunc
+}
+
 type Transcriber struct {
 	client  stt.Client
 	handler TranscriptionHandler
-	jobs    chan audio.Utterance
-	close   sync.Once
+	jobs    chan transcriptionJob
+
+	mu          sync.Mutex
+	generation  uint64
+	inputClosed bool
+	active      *activeTranscription
 }
 
 func NewTranscriber(client stt.Client, handler TranscriptionHandler, queueSize int) (*Transcriber, error) {
@@ -37,41 +59,145 @@ func NewTranscriber(client stt.Client, handler TranscriptionHandler, queueSize i
 	if queueSize <= 0 {
 		return nil, errors.New("размер очереди транскрипции должен быть положительным")
 	}
-	return &Transcriber{client: client, handler: handler, jobs: make(chan audio.Utterance, queueSize)}, nil
+	return &Transcriber{client: client, handler: handler, jobs: make(chan transcriptionJob, queueSize)}, nil
 }
 
 func (t *Transcriber) Handle(ctx context.Context, event vad.Event) error {
-	speechEnded, ok := event.(vad.SpeechEnded)
-	if !ok {
-		return nil
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	select {
-	case t.jobs <- speechEnded.Utterance:
+	switch speechEvent := event.(type) {
+	case vad.SpeechStarted:
+		t.mu.Lock()
+		if t.inputClosed {
+			t.mu.Unlock()
+			return ErrTranscriptionInputClosed
+		}
+		if t.generation == maxInputGeneration {
+			t.mu.Unlock()
+			return ErrTranscriptionGeneration
+		}
+		t.generation++
+		for {
+			select {
+			case <-t.jobs:
+			default:
+				goto queueDrained
+			}
+		}
+	queueDrained:
+		var cancel context.CancelCauseFunc
+		if t.active != nil {
+			cancel = t.active.cancel
+		}
+		t.mu.Unlock()
+		if cancel != nil {
+			cancel(ErrSpeechInterrupted)
+		}
 		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	case vad.SpeechEnded:
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if t.inputClosed {
+			return ErrTranscriptionInputClosed
+		}
+		select {
+		case t.jobs <- transcriptionJob{generation: t.generation, utterance: speechEvent.Utterance}:
+			return nil
+		default:
+			return ErrTranscriptionQueueFull
+		}
+	default:
+		return nil
 	}
 }
 
-func (t *Transcriber) CloseInput() { t.close.Do(func() { close(t.jobs) }) }
+func (t *Transcriber) CloseInput() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.inputClosed {
+		t.inputClosed = true
+		close(t.jobs)
+	}
+}
 
 func (t *Transcriber) Run(ctx context.Context) error {
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case utterance, open := <-t.jobs:
+		case job, open := <-t.jobs:
 			if !open {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				return nil
 			}
-			result, err := t.client.Transcribe(ctx, utterance)
-			if err != nil {
-				return fmt.Errorf("распознать реплику %d: %w", utterance.ID, err)
+			active, jobCtx, ok := t.startJob(ctx, job)
+			if !ok {
+				continue
 			}
-			transcription := Transcription{UtteranceID: utterance.ID, Text: result.Text, Duration: result.Duration}
-			if err := t.handler(ctx, transcription); err != nil {
-				return fmt.Errorf("обработать распознанный текст %d: %w", utterance.ID, err)
+			outcome := t.runJob(jobCtx, job)
+			cause := context.Cause(jobCtx)
+			t.finishJob(active)
+			active.cancel(nil)
+
+			if parentErr := ctx.Err(); parentErr != nil {
+				if outcome == nil || cancellationOnly(outcome, context.Canceled, ErrSpeechInterrupted) {
+					return parentErr
+				}
+				return errors.Join(parentErr, outcome)
+			}
+			if cause == ErrSpeechInterrupted && cancellationOnly(outcome, context.Canceled, ErrSpeechInterrupted) {
+				continue
+			}
+			if outcome != nil {
+				return outcome
 			}
 		}
+	}
+}
+
+func (t *Transcriber) startJob(runCtx context.Context, job transcriptionJob) (*activeTranscription, context.Context, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := runCtx.Err(); err != nil || job.generation != t.generation {
+		return nil, nil, false
+	}
+	jobCtx, cancel := context.WithCancelCause(runCtx)
+	active := &activeTranscription{generation: job.generation, cancel: cancel}
+	t.active = active
+	return active, jobCtx, true
+}
+
+func (t *Transcriber) runJob(jobCtx context.Context, job transcriptionJob) error {
+	if err := jobCtx.Err(); err != nil {
+		return err
+	}
+	result, err := t.client.Transcribe(jobCtx, job.utterance)
+	if err != nil {
+		return fmt.Errorf("распознать реплику %d: %w", job.utterance.ID, err)
+	}
+	if err := jobCtx.Err(); err != nil {
+		return err
+	}
+	transcription := Transcription{UtteranceID: job.utterance.ID, Text: result.Text, Duration: result.Duration}
+	if err := t.handler(jobCtx, transcription); err != nil {
+		return fmt.Errorf("обработать распознанный текст %d: %w", job.utterance.ID, err)
+	}
+	return nil
+}
+
+func (t *Transcriber) finishJob(active *activeTranscription) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.active == active {
+		t.active = nil
 	}
 }

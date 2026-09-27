@@ -53,7 +53,7 @@ func TestNativeModelLifecycle(t *testing.T) {
 		t.Fatalf("invalid model response: %q", first)
 	}
 
-	sentinel := errors.New("stop after first delta")
+	sentinel := errors.New("остановиться после первой дельты")
 	emitCtx, emitCancel := context.WithTimeout(ctx, time.Minute)
 	var emitted int
 	err = generator.Generate(emitCtx, llm.Request{Dialogue: snapshot, Options: llm.Options{Temperature: 0, MaxTokens: 512}}, func(llm.TextDelta) error {
@@ -145,16 +145,16 @@ func (s *integrationResponseSink) Push(_ context.Context, delta assistant.Respon
 
 func (s *integrationResponseSink) Complete(_ context.Context, response assistant.Response) error {
 	if got := s.current.String(); got != response.Text {
-		return fmt.Errorf("streamed response %q differs from complete response %q", got, response.Text)
+		return fmt.Errorf("потоковый ответ не совпадает с полным ответом")
 	}
 	s.responses = append(s.responses, response)
 	s.current.Reset()
 	return nil
 }
 
-func (s *integrationResponseSink) Abort(context.Context, assistant.ResponseAbort) error {
+func (s *integrationResponseSink) Abort(context.Context, assistant.ResponseAbort) (assistant.ResponseAbortResult, error) {
 	s.aborts++
-	return errors.New("unexpected response abort")
+	return assistant.ResponseAbortResult{}, errors.New("неожиданная отмена вывода ответа")
 }
 
 func generateText(t *testing.T, ctx context.Context, generator llm.Generator, request llm.Request) string {
@@ -162,7 +162,7 @@ func generateText(t *testing.T, ctx context.Context, generator llm.Generator, re
 	var text strings.Builder
 	if err := generator.Generate(ctx, request, func(delta llm.TextDelta) error {
 		if !utf8.ValidString(delta.Text) {
-			return fmt.Errorf("invalid UTF-8 delta")
+			return fmt.Errorf("дельта содержит некорректный UTF-8")
 		}
 		_, err := io.WriteString(&text, delta.Text)
 		return err

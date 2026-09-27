@@ -51,13 +51,15 @@ func TestResponseOutputAbortTerminatesPartialLineAndResets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := sink.Abort(context.Background(), assistant.ResponseAbort{UtteranceID: 1, TurnID: 1}); err != nil || output.Len() != 0 {
+	result, err := sink.Abort(context.Background(), assistant.ResponseAbort{UtteranceID: 1, TurnID: 1})
+	if err != nil || result != (assistant.ResponseAbortResult{UtteranceID: 1, TurnID: 1}) || output.Len() != 0 {
 		t.Fatalf("Abort without active stream: err=%v output=%q", err, output.String())
 	}
 	if err := sink.Push(context.Background(), assistant.ResponseDelta{UtteranceID: 1, TurnID: 1, Text: "часть"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := sink.Abort(context.Background(), assistant.ResponseAbort{UtteranceID: 1, TurnID: 1}); err != nil {
+	result, err = sink.Abort(context.Background(), assistant.ResponseAbort{UtteranceID: 1, TurnID: 1})
+	if err != nil || result != (assistant.ResponseAbortResult{UtteranceID: 1, TurnID: 1}) {
 		t.Fatal(err)
 	}
 	if err := sink.Push(context.Background(), assistant.ResponseDelta{UtteranceID: 2, TurnID: 2, Text: "новый"}); err != nil {
@@ -83,7 +85,7 @@ func TestResponseOutputRejectsMismatchedIDsWithoutResettingStream(t *testing.T) 
 	if err := sink.Complete(context.Background(), assistant.Response{UtteranceID: 1, TurnID: 8, Text: "ok"}); err == nil {
 		t.Fatal("Complete accepted mismatched turn ID")
 	}
-	if err := sink.Abort(context.Background(), assistant.ResponseAbort{UtteranceID: 1, TurnID: 8}); err == nil {
+	if _, err := sink.Abort(context.Background(), assistant.ResponseAbort{UtteranceID: 1, TurnID: 8}); err == nil {
 		t.Fatal("Abort accepted mismatched turn ID")
 	}
 	if err := sink.Push(context.Background(), assistant.ResponseDelta{UtteranceID: 1, TurnID: 7, Text: "!"}); err != nil {
@@ -144,7 +146,7 @@ func TestResponseOutputAbortResetsStateEvenWhenWriterFails(t *testing.T) {
 	}
 	sentinel := errors.New("write failed")
 	sink.output = errorResponseWriter{err: sentinel}
-	if err := sink.Abort(context.Background(), assistant.ResponseAbort{UtteranceID: 1, TurnID: 1}); !errors.Is(err, sentinel) {
+	if _, err := sink.Abort(context.Background(), assistant.ResponseAbort{UtteranceID: 1, TurnID: 1}); !errors.Is(err, sentinel) {
 		t.Fatalf("Abort error=%v want writer cause", err)
 	}
 	sink.output = &output

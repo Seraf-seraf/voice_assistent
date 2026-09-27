@@ -41,16 +41,56 @@ func (r *Responder) Handle(ctx context.Context, query Query) (resultErr error) {
 	}
 	turnCompleted := false
 	sinkCompleted := false
+	var responseText strings.Builder
 	defer func() {
 		var cleanupErrors []error
+		var progress ResponseAbortResult
+		validProgress := true
 		if !sinkCompleted {
-			if err := r.sink.Abort(context.WithoutCancel(ctx), ResponseAbort{UtteranceID: query.UtteranceID, TurnID: turnID}); err != nil {
-				cleanupErrors = append(cleanupErrors, fmt.Errorf("отменить вывод ответа для хода диалога %d: %w", turnID, err))
+			abort := ResponseAbort{UtteranceID: query.UtteranceID, TurnID: turnID}
+			var abortErr error
+			progress, abortErr = r.sink.Abort(context.WithoutCancel(ctx), abort)
+			validProgress = progress.UtteranceID == abort.UtteranceID && progress.TurnID == abort.TurnID &&
+				utf8.ValidString(progress.PlayedText) && strings.HasPrefix(responseText.String(), progress.PlayedText)
+			if !validProgress {
+				cleanupErrors = append(cleanupErrors, ErrInvalidResponseProgress)
 			}
+			if abortErr != nil {
+				cleanupErrors = append(cleanupErrors, fmt.Errorf("отменить вывод ответа для хода диалога %d: %w", turnID, abortErr))
+			}
+		}
+		interrupted := !sinkCompleted && context.Cause(ctx) == ErrSpeechInterrupted
+		if interrupted && validProgress {
+			playedText := strings.TrimSpace(progress.PlayedText)
+			recordFailed := false
+			if playedText != "" {
+				if err := r.dialogue.RecordSpoken(turnID, playedText); err != nil {
+					recordFailed = true
+					cleanupErrors = append(cleanupErrors, fmt.Errorf("записать воспроизведённый префикс хода диалога %d: %w", turnID, err))
+				}
+			}
+			if !recordFailed {
+				if err := r.dialogue.InterruptTurn(turnID); err != nil {
+					cleanupErrors = append(cleanupErrors, fmt.Errorf("прервать ход диалога %d: %w", turnID, err))
+				} else {
+					turnCompleted = true
+				}
+			}
+		} else if !turnCompleted {
+			if err := r.dialogue.AbortTurn(turnID); err != nil {
+				cleanupErrors = append(cleanupErrors, fmt.Errorf("отменить ход диалога %d: %w", turnID, err))
+			} else {
+				turnCompleted = true
+			}
+		}
+		if interrupted {
+			cleanupErrors = append(cleanupErrors, ErrSpeechInterrupted)
 		}
 		if !turnCompleted {
 			if err := r.dialogue.AbortTurn(turnID); err != nil {
-				cleanupErrors = append(cleanupErrors, fmt.Errorf("отменить ход диалога %d: %w", turnID, err))
+				cleanupErrors = append(cleanupErrors, fmt.Errorf("освободить ход диалога %d после ошибки очистки: %w", turnID, err))
+			} else {
+				turnCompleted = true
 			}
 		}
 		if len(cleanupErrors) != 0 {
@@ -59,31 +99,44 @@ func (r *Responder) Handle(ctx context.Context, query Query) (resultErr error) {
 	}()
 
 	request := llm.Request{Dialogue: r.dialogue.Snapshot(), Options: r.options}
-	var responseText strings.Builder
 	var whitespace responseWhitespace
-	if err := r.generator.Generate(ctx, request, func(delta llm.TextDelta) error {
+	var emitErr error
+	generateErr := r.generator.Generate(ctx, request, func(delta llm.TextDelta) error {
+		if emitErr != nil {
+			return emitErr
+		}
 		if err := ctx.Err(); err != nil {
+			emitErr = err
 			return err
 		}
 		visible := whitespace.Push(delta.Text)
 		if visible == "" {
 			return nil
 		}
-		if err := r.sink.Push(ctx, ResponseDelta{UtteranceID: query.UtteranceID, TurnID: turnID, Text: visible}); err != nil {
-			return fmt.Errorf("передать дельту ответа для хода диалога %d: %w", turnID, err)
-		}
 		_, _ = responseText.WriteString(visible)
+		if err := r.sink.Push(ctx, ResponseDelta{UtteranceID: query.UtteranceID, TurnID: turnID, Text: visible}); err != nil {
+			emitErr = fmt.Errorf("передать дельту ответа для хода диалога %d: %w", turnID, err)
+			return emitErr
+		}
 		return nil
-	}); err != nil {
-		return fmt.Errorf("сгенерировать ответ для хода диалога %d: %w", turnID, err)
+	})
+	if generateErr != nil || emitErr != nil {
+		var failures []error
+		if generateErr != nil {
+			failures = append(failures, fmt.Errorf("сгенерировать ответ для хода диалога %d: %w", turnID, generateErr))
+		}
+		if emitErr != nil && (generateErr == nil || !errors.Is(generateErr, emitErr)) {
+			failures = append(failures, emitErr)
+		}
+		return errors.Join(failures...)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	whitespace.Finish()
 	text := responseText.String()
 	if text == "" {
 		return ErrEmptyResponse
-	}
-	if err := ctx.Err(); err != nil {
-		return err
 	}
 	if err := r.sink.Complete(ctx, Response{UtteranceID: query.UtteranceID, TurnID: turnID, Text: text}); err != nil {
 		return fmt.Errorf("завершить вывод ответа для хода диалога %d: %w", turnID, err)

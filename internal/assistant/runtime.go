@@ -145,29 +145,47 @@ func cleanupError(name string, err, cancellation error) error {
 	return wrapError(name, err)
 }
 
-func cancellationOnly(err, cancellation error) bool {
-	if err == nil || cancellation == nil {
+func cancellationOnly(err error, allowed ...error) bool {
+	if err == nil || len(allowed) == 0 {
 		return false
+	}
+	for _, cause := range allowed {
+		if cause == nil {
+			continue
+		}
+		if exactErrorMatch(err, cause) {
+			return true
+		}
 	}
 	if many, ok := err.(interface{ Unwrap() []error }); ok {
 		children := many.Unwrap()
 		if len(children) == 0 {
-			return err == cancellation
+			return false
 		}
+		found := false
 		for _, child := range children {
-			if child != nil && !cancellationOnly(child, cancellation) {
+			if child == nil {
+				continue
+			}
+			found = true
+			if !cancellationOnly(child, allowed...) {
 				return false
 			}
 		}
-		return true
+		return found
 	}
 	if one, ok := err.(interface{ Unwrap() error }); ok {
-		child := one.Unwrap()
-		if child != nil {
-			return cancellationOnly(child, cancellation)
-		}
+		return cancellationOnly(one.Unwrap(), allowed...)
 	}
-	return err == cancellation
+	return false
+}
+
+func exactErrorMatch(err, cause error) bool {
+	errType := reflect.TypeOf(err)
+	if errType == nil || errType != reflect.TypeOf(cause) || !errType.Comparable() {
+		return false
+	}
+	return err == cause
 }
 
 func awaitResult(channel <-chan error, current error) (error, <-chan error) {
