@@ -129,7 +129,7 @@ func TestTranscriberForwardsQueryAndLogsOnlyMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := wiringSTTClient{result: stt.Transcript{Text: "секретная пользовательская фраза", Duration: 125 * time.Millisecond}}
-	transcriber, err := newTranscriber(client, log, processor)
+	transcriber, err := newTranscriber(client, log, processor, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func (c sequenceWiringSTT) Transcribe(_ context.Context, utterance audio.Utteran
 
 func processOneUtterance(t *testing.T, client stt.Client, processor *assistant.InputProcessor, id uint64) {
 	t.Helper()
-	transcriber, err := newTranscriber(client, slog.New(slog.NewTextHandler(io.Discard, nil)), processor)
+	transcriber, err := newTranscriber(client, slog.New(slog.NewTextHandler(io.Discard, nil)), processor, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"time"
 
@@ -171,9 +172,16 @@ func newInputProcessor(
 	}, time.Now)
 }
 
-func newTranscriber(client stt.Client, log *slog.Logger, processor *assistant.InputProcessor) (*assistant.Transcriber, error) {
+func newTranscriber(client stt.Client, log *slog.Logger, processor *assistant.InputProcessor, output io.Writer) (*assistant.Transcriber, error) {
+	transcriptionOutput, err := newTranscriptionOutput(output)
+	if err != nil {
+		return nil, err
+	}
 	return assistant.NewTranscriber(client, func(ctx context.Context, result assistant.Transcription) error {
 		log.Debug("Речь распознана", "utterance_id", result.UtteranceID, "stt_duration", result.Duration)
+		if err := transcriptionOutput(ctx, result); err != nil {
+			return err
+		}
 		return processor.Handle(ctx, result)
 	}, transcriptionQueueSize)
 }

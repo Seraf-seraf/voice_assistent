@@ -85,7 +85,7 @@ func run(ctx context.Context) (resultErr error) {
 	if err != nil {
 		return fmt.Errorf("создать input processor: %w", err)
 	}
-	transcriber, err := newTranscriber(sttClient, log, processor)
+	transcriber, err := newTranscriber(sttClient, log, processor, os.Stdout)
 	if err != nil {
 		return fmt.Errorf("создать transcriber: %w", err)
 	}
