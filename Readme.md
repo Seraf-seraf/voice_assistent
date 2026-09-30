@@ -1,21 +1,23 @@
 # Voice Assistant
 
-Локальный голосовой ассистент на Go для Linux amd64/glibc. Приложение получает
-звук с microphone, сегментирует речь через VAD, распознаёт её в STT/Whisper,
-нормализует текст и передаёт его в router и локальную LLM. Ответ выводится в
-stdout по мере генерации; при включённом TTS он также озвучивается локальным
-голосом короткими законченными фразами. Подготовка модели и Linux ALSA описаны в
-[docs/tts-linux.md](docs/tts-linux.md). Этап `[interrupt]` остаётся следующим:
-голосовая команда пока не останавливает генерацию и воспроизведение.
+Локальный голосовой ассистент на Go для Linux amd64/glibc и Windows amd64. Приложение
+получает звук с microphone, сегментирует речь через VAD, распознаёт её в
+STT/Whisper, нормализует текст и передаёт его в router и локальную LLM. Ответ
+выводится в stdout по мере генерации; при включённом TTS он также озвучивается
+локальным голосом короткими законченными фразами. Для TTS Linux использует
+PulseAudio, Windows — WASAPI; настройка описана в
+[docs/tts-linux.md](docs/tts-linux.md) и [docs/tts-windows.md](docs/tts-windows.md).
+Озвучка пофразовая, между фразами возможны паузы. Этап `[interrupt]` остаётся
+следующим: голосовая команда пока не останавливает генерацию и воспроизведение.
 
 ## Требования
 
 - Go toolchain из `go.mod`;
-- Linux amd64/glibc, CGO и GCC-compatible C compiler;
-- ALSA development files (`libasound2-dev` и `pkg-config`) для сборки Linux TTS;
-- локальная GGUF-модель Qwen3.5-0.8B и native llama.cpp библиотеки для Linux;
+- Linux amd64/glibc или Windows amd64, CGO и C compiler;
+- Linux: runtime `libpulse.so.0`; для Windows cross-build из Linux — MinGW-w64;
+- локальная GGUF-модель и native llama.cpp библиотеки для целевой ОС;
 - Docker с NVIDIA Container Toolkit для Whisper;
-- реальный Linux ALSA endpoint для проверки слышимого вывода. TTS по умолчанию выключен.
+- реальный PulseAudio endpoint в Linux или WASAPI endpoint в Windows для проверки слышимого вывода. TTS включается непустым `tts.model_dir`.
 
 ## Настройка
 
@@ -26,25 +28,48 @@ cp config/assistant.example.yaml config/assistant.yaml
 ```
 
 STT API-токен не записывается в YAML. При необходимости используйте переменную
-`ASSISTANT_STT_API_KEY`. Поддерживаемые overrides перечислены в `internal/config/config.go`.
+`ASSISTANT_STT_API_KEY`. Поддерживаемые overrides перечислены в
+`internal/bootstrap/config/config.go`.
+
+## Слои кода
+
+- `internal/service` содержит высокоуровневые контракты и независимые правила:
+  аудиоданные, диалог, маршрутизацию, LLM/STT/TTS/VAD и диагностику.
+- `internal/platform` содержит низкоуровневые реализации: аудиоустройства,
+  HTTP-клиент Whisper, sherpa-onnx, llama.cpp, WebRTC VAD и журнал.
+- `internal/app` связывает сервисы в сценарии обработки речи и ответа.
+- `internal/bootstrap` загружает конфигурацию, выбирает реализации и собирает
+  приложение. `cmd/assistant` остаётся тонкой точкой входа.
+
+Зависимости направлены внутрь: `app` использует `service`, `platform`
+реализует контракты `service`, а `bootstrap` связывает эти части.
 
 ## Команды
 
+Linux использует корневой `Makefile`, Windows — `Makefile.windows`. Цель `test`
+запускает все Go-тесты и собирает приложение, поэтому отдельная команда сборки
+не нужна:
+
 ```bash
-make test          # unit-тесты
-make test-race     # тесты с race detector
-make lint          # gofmt check и go vet
-make build         # сборка для текущей ОС
-make build-windows # сборка Windows executable
-make package-linux-tts # пакет Linux с native sherpa shared libraries
-make run           # запуск с config/assistant.yaml
-make up            # запуск Docker-сервисов
-make down          # остановка Docker-сервисов
+# Linux amd64
+make test
+make run
+make package
+
+# Windows amd64
+make -f Makefile.windows test
+make -f Makefile.windows run
+make -f Makefile.windows package
 ```
+
+`up` и `down` доступны в обоих файлах для управления Docker-сервисами: в Linux
+это `make up` и `make down`; в Windows —
+`make -f Makefile.windows up` и `make -f Makefile.windows down`.
+Native-проверки с моделью и аудиоустройством описаны в инструкциях TTS.
 
 Тракт обработки: microphone → VAD → STT/Whisper → normalization → router →
 локальная LLM → потоковый текст в stdout и, при включённом TTS, последовательная
-озвучка коротких фраз. STT продолжает обращаться к Whisper
+озвучка коротких фраз через платформенный аудиовыход. STT продолжает обращаться к Whisper
 через собственный HTTP adapter. Команда reset history очищает историю. Ответ
 генерируется последовательно в STT worker.
 

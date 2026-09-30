@@ -29,7 +29,7 @@ if [[ "$actual_version" != "$expected_version" ]]; then
 	exit 1
 fi
 if [[ ! -x "$assistant_binary" ]]; then
-	printf 'Не найден собранный бинарник: %s (сначала выполните make build)\n' "$assistant_binary" >&2
+	printf 'Не найден собранный Linux-бинарник: %s\n' "$assistant_binary" >&2
 	exit 1
 fi
 

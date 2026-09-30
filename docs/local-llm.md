@@ -44,17 +44,17 @@ export ASSISTANT_LLM_LIBRARY_DIR="$PWD/.native/llama-v0.5.0/linux-amd64-cuda12"
 
 dpkg-query -W -f='${Status}\n' libffi8
 nvidia-smi
-make install-llamacpp-cuda12
-make test-llamacpp-integration
+go run github.com/hybridgroup/yzma@v1.28.0 install --version v0.5.0 --processor cuda-12 --os linux --lib "$ASSISTANT_LLM_LIBRARY_DIR" --verify require
+go test -tags=llm_integration -count=1 -timeout=180s ./internal/platform/llm/llamacpp
 ```
 
-`libffi8` требуется Go FFI binding при загрузке пакета; Makefile не устанавливает
-системные пакеты. `nvidia-smi` проверяет драйвер, но inference на GPU отдельно
-подтверждает только native test. Native libraries (SO и их runtime dependencies)
-должны оставаться доступны рядом с приложением.
+`libffi8` требуется Go FFI binding при загрузке пакета; команда установки
+native bundle не устанавливает системные пакеты. `nvidia-smi` проверяет драйвер,
+но inference на GPU отдельно подтверждает только native test. Native libraries
+(SO и их runtime dependencies) должны оставаться доступны рядом с приложением.
 
 Для обычного запуска сначала заполните `llm.model` и `llm.library_dir` в
-`config/assistant.yaml`, затем используйте существующую команду `make run`.
+`config/assistant.yaml`, затем используйте `make run`.
 Сервис Whisper запускается отдельно, как и раньше.
 
 ## Windows PowerShell
@@ -70,7 +70,7 @@ go run github.com/hybridgroup/yzma@v1.28.0 install --version v0.5.0 --processor 
 if ($LASTEXITCODE -ne 0) { throw 'Native install failed' }
 go run github.com/hybridgroup/yzma@v1.28.0 verify --version v0.5.0 --lib $env:ASSISTANT_LLM_LIBRARY_DIR --strict
 if ($LASTEXITCODE -ne 0) { throw 'Native verification failed' }
-go test -tags=llm_integration -count=1 -timeout=180s ./internal/llm/llamacpp
+go test -tags=llm_integration -count=1 -timeout=180s ./internal/platform/llm/llamacpp
 if ($LASTEXITCODE -ne 0) { throw 'Native tests failed' }
 ```
 
@@ -83,5 +83,7 @@ Native Generator выдаёт текстовые `TextDelta` по мере ге�
 сразу передаёт их в output sink, а после успешного завершения вывода сохраняет
 собранный полный ответ в истории. `TextDelta` — фрагмент текста, не обязательно
 один токен модели; частота отображения зависит от размера фрагментов. Это
-текстовый streaming, не речевое воспроизведение. TTS не подключён. PTT hotkey
-не подключён, а голосовая команда «стоп» не прерывает текущую генерацию.
+текстовый streaming, не речевое воспроизведение. Ответ можно озвучить через
+TTS; настройка описана в [tts-linux.md](tts-linux.md) и
+[tts-windows.md](tts-windows.md). PTT hotkey не подключён, а голосовая команда
+«стоп» не прерывает текущую генерацию.

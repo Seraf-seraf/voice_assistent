@@ -1,10 +1,11 @@
 # Локальная речь в Linux
 
-Целевой runtime этой настройки — Linux amd64/glibc с CGO. Обычная сборка TTS
-требует Go toolchain проекта, C compiler, `pkg-config` и ALSA development files
-(`libasound2-dev`). Приложение не устанавливает системные пакеты и не загружает
-голос во время запуска. Если `git` или `git-lfs` отсутствует, установите их
-отдельным системным способом до подготовки модели.
+Целевой runtime этой настройки — Linux amd64/glibc с CGO. Сборка требует Go
+toolchain проекта и C compiler. Во время работы Linux TTS напрямую использует
+системную библиотеку PulseAudio `libpulse.so.0`; ALSA development headers,
+`alsa.pc` и PulseAudio ALSA plugin не нужны. Приложение не устанавливает
+системные пакеты и не загружает голос при запуске. Если `git` или `git-lfs`
+отсутствует, установите их отдельным системным способом до подготовки модели.
 
 Выбран технический стартовый голос VITS `ru_RU-ruslan-medium`, подготовленный
 для sherpa-onnx. Один ответ разбивается на короткие фразы, каждая фраза сначала
@@ -90,13 +91,14 @@ audio:
   output_device: default
 ```
 
-`audio.output_device` здесь — имя ALSA PCM. Пустая строка выбирает ALSA `default`;
-явно заданное имя, например `pulse`, передаётся backend как есть. Устройство
-не подменяется при ошибке. Для WSL нужен работающий Linux audio server и
-установленный ALSA Pulse plugin; задайте `pulse` явно, если это ваш endpoint.
-Используйте ALSA endpoint из того же пользовательского Linux-сеанса, в котором
-работает assistant. Не используйте UNC-путь или WASAPI в Linux и не создавайте
-PulseAudio/PipeWire daemon от root. Приложение не меняет системный default route.
+`audio.output_device` здесь — имя sink PulseAudio. Пустая строка или `default`
+выбирает системный PulseAudio default; другое значение передаётся как точное имя
+sink. Получить список можно командой `pactl list short sinks`, если `pactl`
+установлен. Отсутствующий sink не заменяется другим устройством. Используйте
+PulseAudio endpoint из того же пользовательского Linux-сеанса, в котором
+работает assistant. WSL использует настроенный пользователем Linux audio server;
+приложение не настраивает Windows-маршрут и не создаёт PulseAudio/PipeWire daemon
+от root. Приложение не меняет системный default route.
 
 Локальная GGUF-модель LLM остаётся на прежнем Linux-пути:
 
@@ -106,20 +108,26 @@ PulseAudio/PipeWire daemon от root. Приложение не меняет с�
 
 ## Native и слышимая проверка
 
-Сборка обычных unit tests не скачивает модель и не проигрывает звук. Для native
-synthesis укажите выбранные assets и запустите отдельный integration target:
+Обычная проверка запускается одной целью: она выполняет `go test ./...` и
+собирает приложение. Модель и аудиоустройство для неё не нужны:
 
 ```bash
-ASSISTANT_TTS_MODEL_DIR="$VOICE_DIR" make test-tts-integration
+make test
+```
+
+Для отдельной проверки native synthesis укажите подготовленную модель:
+
+```bash
+ASSISTANT_TTS_MODEL_DIR="$VOICE_DIR" go test -tags=tts_integration -count=1 -timeout=180s ./internal/platform/tts/sherpa
 ```
 
 Этот тест подтверждает синтез pinned model, но не подтверждает звук устройства.
 Для playback выберите наушники или низкую системную громкость, затем укажите
-реальный ALSA endpoint. Значение `null` проверяет только backend без слышимого
-выхода:
+реальный PulseAudio sink. Пустая строка выбирает системный default; `null` будет
+обычным именем sink и не считается проверкой слышимости:
 
 ```bash
-ASSISTANT_PLAYBACK_TEST_DEVICE="hw:0,0" make test-playback-integration
+ASSISTANT_PLAYBACK_TEST_DEVICE="alsa_output.pci-0000_00_1f.3.analog-stereo" go test -tags=playback_integration -count=1 -timeout=30s ./internal/platform/audio/output/pulse
 ```
 
 Подтвердите звук вручную на выбранном endpoint. Перед использованием микрофона
@@ -140,7 +148,7 @@ preemption C-вызова не обещается.
 В Linux/amd64 окружении с CGO, `readelf` и `ldd` выполните:
 
 ```bash
-make package-linux-tts
+make package
 ```
 
 Пакет появляется в `dist/voice-assistant-linux-amd64`. Он включает assistant,
@@ -148,7 +156,7 @@ make package-linux-tts
 Go-модуля с перечнем native-файлов. Проверка `ldd` убеждается, что sherpa и
 ONNX Runtime разрешаются из `package/lib`. Другие лицензии native-зависимостей
 этот LICENSE не заменяет. Пакет не включает голос, GGUF, локальный config или
-системный ALSA runtime. Это не single-file бинарник.
+системную `libpulse.so.0`. Это не single-file бинарник.
 
 Для запуска передайте свой конфиг:
 

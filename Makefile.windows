@@ -1,17 +1,19 @@
 .DEFAULT_GOAL := up
 
+WINDOWS_CC ?= x86_64-w64-mingw32-gcc
+
 test:
-	@test "$$(go env GOOS)" = linux || { echo "Эта цель требует Linux" >&2; exit 1; }
+	@test "$$(go env GOOS)" = windows || { echo "Эта цель требует Windows" >&2; exit 1; }
 	@test "$$(go env GOARCH)" = amd64 || { echo "Эта цель требует amd64" >&2; exit 1; }
 	@test "$$(go env CGO_ENABLED)" = 1 || { echo "Эта цель требует CGO_ENABLED=1" >&2; exit 1; }
 	go test ./...
 	mkdir -p bin
-	go build -o bin/assistant ./cmd/assistant
+	go build -o bin/assistant.exe ./cmd/assistant
 
 package:
 	mkdir -p bin
-	go build -o bin/assistant ./cmd/assistant
-	./scripts/package-linux-tts.sh
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CC="$(WINDOWS_CC)" go build -o bin/assistant.exe ./cmd/assistant
+	./scripts/package-windows-tts.sh
 
 run:
 	go run ./cmd/assistant -config config/assistant.yaml
