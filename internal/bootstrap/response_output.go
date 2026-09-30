@@ -65,19 +65,23 @@ func (o *responseOutput) Complete(ctx context.Context, response assistant.Respon
 	return nil
 }
 
-func (o *responseOutput) Abort(_ context.Context, abort assistant.ResponseAbort) error {
+func (o *responseOutput) Abort(_ context.Context, abort assistant.ResponseAbort) (assistant.ResponseAbortResult, error) {
 	if !o.active {
-		return nil
+		return responseAbortResult(abort), nil
 	}
 	if abort.UtteranceID != o.utteranceID || abort.TurnID != o.turnID {
-		return errors.New("отмена ответа не совпадает с активным потоком")
+		return assistant.ResponseAbortResult{}, errors.New("отмена ответа не совпадает с активным потоком")
 	}
 	err := writeExact(o.output, "\n")
 	o.reset()
 	if err != nil {
-		return fmt.Errorf("завершить строку отменённого ответа: %w", err)
+		return responseAbortResult(abort), fmt.Errorf("завершить строку отменённого ответа: %w", err)
 	}
-	return nil
+	return responseAbortResult(abort), nil
+}
+
+func responseAbortResult(abort assistant.ResponseAbort) assistant.ResponseAbortResult {
+	return assistant.ResponseAbortResult{UtteranceID: abort.UtteranceID, TurnID: abort.TurnID}
 }
 
 func (o *responseOutput) reset() {

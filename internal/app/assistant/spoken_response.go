@@ -51,6 +51,7 @@ type speechSession struct {
 	workerResult          error
 	segmenter             speechSegmenter
 	accepted              strings.Builder
+	playedText            strings.Builder
 	runeCount             int
 	inputClosed           bool
 	completing            bool
@@ -147,13 +148,14 @@ func (s *SpokenResponseSink) Complete(ctx context.Context, response Response) er
 	return nil
 }
 
-func (s *SpokenResponseSink) Abort(ctx context.Context, abort ResponseAbort) error {
+func (s *SpokenResponseSink) Abort(ctx context.Context, abort ResponseAbort) (ResponseAbortResult, error) {
 	session := s.active
+	initialResult := ResponseAbortResult{UtteranceID: abort.UtteranceID, TurnID: abort.TurnID}
 	if session == nil {
-		return nil
+		return initialResult, nil
 	}
 	if session.utteranceID != abort.UtteranceID || session.turnID != abort.TurnID {
-		return ErrSpeechState
+		return initialResult, ErrSpeechState
 	}
 	session.cancel()
 	closeSpeechInput(session)
@@ -165,12 +167,13 @@ func (s *SpokenResponseSink) Abort(ctx context.Context, abort ResponseAbort) err
 			result = fmt.Errorf("синтез/воспроизведение речевого ответа: %w", session.workerResult)
 		}
 	}
-	if err := s.textSink.Abort(ctx, abort); err != nil {
+	if _, err := s.textSink.Abort(ctx, abort); err != nil {
 		result = errors.Join(result, fmt.Errorf("очистить текстовый приёмник ответа: %w", err))
 	}
+	progress := ResponseAbortResult{UtteranceID: abort.UtteranceID, TurnID: abort.TurnID, PlayedText: session.playedText.String()}
 	session.cancel()
 	s.active = nil
-	return result
+	return progress, result
 }
 
 func (s *SpokenResponseSink) startSession(parent context.Context, delta ResponseDelta) *speechSession {
@@ -204,6 +207,7 @@ func (s *SpokenResponseSink) runSpeechWorker(session *speechSession) {
 			}
 			text := strings.TrimSpace(phrase)
 			if text == "" {
+				_, _ = session.playedText.WriteString(phrase)
 				continue
 			}
 			if err := tts.ValidateText(text); err != nil {
@@ -231,6 +235,7 @@ func (s *SpokenResponseSink) runSpeechWorker(session *speechSession) {
 				session.cancel()
 				return
 			}
+			_, _ = session.playedText.WriteString(phrase)
 		}
 	}
 }

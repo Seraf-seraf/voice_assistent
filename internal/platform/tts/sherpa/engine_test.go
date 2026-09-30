@@ -55,7 +55,7 @@ func TestOptionsValidate(t *testing.T) {
 }
 
 func TestEngineSynthesizeValidatesAndWrapsBackend(t *testing.T) {
-	backendErr := errors.New("native synthesis failed")
+	backendErr := errors.New("ошибка нативного синтеза")
 	backend := &fakeBackend{err: backendErr}
 	engine := newEngine(backend)
 	if _, err := engine.Synthesize(context.Background(), strings.Repeat("ё", 201)); !errors.Is(err, tts.ErrInvalidText) || backend.calls != 0 {
@@ -109,13 +109,31 @@ func TestEngineSynthesizeCancellationBeforeAndAfterBackend(t *testing.T) {
 	}
 	backendCtx, backendCancel := context.WithCancel(context.Background())
 	defer backendCancel()
-	backendErr := errors.New("backend error while canceled")
+	backendErr := errors.New("ошибка backend при отмене")
 	backend = &fakeBackend{
 		err:         backendErr,
 		onSynthesis: func(context.Context) { backendCancel() },
 	}
 	if _, err := newEngine(backend).Synthesize(backendCtx, "проверка"); !errors.Is(err, context.Canceled) || !errors.Is(err, backendErr) {
 		t.Fatalf("canceled backend failure = %v, want cancellation and backend cause", err)
+	}
+}
+
+func TestEngineCancellationKeepsOnlyIndependentBackendFailuresFatal(t *testing.T) {
+	for _, backendErr := range []error{nil, context.Canceled} {
+		ctx, cancel := context.WithCancel(context.Background())
+		backend := &fakeBackend{err: backendErr, onSynthesis: func(context.Context) { cancel() }}
+		_, err := newEngine(backend).Synthesize(ctx, "проверка")
+		if !errors.Is(err, context.Canceled) || errors.Is(err, ErrSynthesis) {
+			t.Fatalf("чистая отмена дала ошибку %v, ожидалась только отмена", err)
+		}
+	}
+	sentinel := errors.New("ошибка нативного callback")
+	ctx, cancel := context.WithCancel(context.Background())
+	backend := &fakeBackend{err: errors.Join(context.Canceled, sentinel), onSynthesis: func(context.Context) { cancel() }}
+	_, err := newEngine(backend).Synthesize(ctx, "проверка")
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, sentinel) || !errors.Is(err, ErrSynthesis) {
+		t.Fatalf("составная отмена потеряла причину: %v", err)
 	}
 }
 

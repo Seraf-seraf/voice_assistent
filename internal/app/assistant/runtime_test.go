@@ -208,24 +208,26 @@ func TestNewRuntimeRejectsNilDependencies(t *testing.T) {
 	}
 }
 
-type observingPipeline struct {
+type blockedDeliveryPipeline struct {
 	*Transcriber
-	thirdHandle chan struct{}
-	thirdID     uint64
+	deliveryEntered chan struct{}
+	thirdID         uint64
 }
 
-func (p *observingPipeline) Handle(ctx context.Context, event vad.Event) error {
+func (p *blockedDeliveryPipeline) Handle(ctx context.Context, event vad.Event) error {
 	targetID := p.thirdID
 	if targetID == 0 {
 		targetID = 3
 	}
 	if ended, ok := event.(vad.SpeechEnded); ok && ended.Utterance.ID == targetID {
-		close(p.thirdHandle)
+		close(p.deliveryEntered)
+		<-ctx.Done()
+		return ctx.Err()
 	}
 	return p.Transcriber.Handle(ctx, event)
 }
 
-func TestRuntimePipelineFailureUnblocksBackpressuredTranscriber(t *testing.T) {
+func TestRuntimePipelineFailureUnblocksBlockedDelivery(t *testing.T) {
 	pipelineErr := errors.New("whisper failed")
 	transcribeStarted := make(chan struct{})
 	releaseTranscribe := make(chan struct{})
@@ -233,11 +235,11 @@ func TestRuntimePipelineFailureUnblocksBackpressuredTranscriber(t *testing.T) {
 		close(transcribeStarted)
 		<-releaseTranscribe
 		return stt.Transcript{}, pipelineErr
-	}}, func(context.Context, Transcription) error { return nil }, 1)
+	}}, func(context.Context, Transcription) error { return nil }, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pipeline := &observingPipeline{Transcriber: transcriber, thirdHandle: make(chan struct{})}
+	pipeline := &blockedDeliveryPipeline{Transcriber: transcriber, deliveryEntered: make(chan struct{})}
 	listener := newFakeListener(func(context.Context) error { return nil },
 		vad.SpeechEnded{Utterance: audio.Utterance{ID: 1}},
 		vad.SpeechEnded{Utterance: audio.Utterance{ID: 2}},
@@ -260,7 +262,7 @@ func TestRuntimePipelineFailureUnblocksBackpressuredTranscriber(t *testing.T) {
 		t.Fatal("STT did not start")
 	}
 	select {
-	case <-pipeline.thirdHandle:
+	case <-pipeline.deliveryEntered:
 	case <-time.After(time.Second):
 		close(releaseTranscribe)
 		cancel()
@@ -276,21 +278,21 @@ func TestRuntimePipelineFailureUnblocksBackpressuredTranscriber(t *testing.T) {
 	case <-time.After(time.Second):
 		cancel()
 		waitRuntime(t, done)
-		t.Fatal("Runtime remained blocked on the full transcription queue")
+		t.Fatal("Runtime не остановил заблокированную доставку события после ошибки конвейера")
 	}
 }
 
-func TestRuntimeParentCancellationUnblocksBackpressuredTranscriber(t *testing.T) {
+func TestRuntimeParentCancellationUnblocksBlockedDelivery(t *testing.T) {
 	transcribeStarted := make(chan struct{})
 	transcriber, err := NewTranscriber(fakeSTTClient{transcribe: func(ctx context.Context, _ audio.Utterance) (stt.Transcript, error) {
 		close(transcribeStarted)
 		<-ctx.Done()
 		return stt.Transcript{}, ctx.Err()
-	}}, func(context.Context, Transcription) error { return nil }, 1)
+	}}, func(context.Context, Transcription) error { return nil }, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pipeline := &observingPipeline{Transcriber: transcriber, thirdHandle: make(chan struct{}), thirdID: 13}
+	pipeline := &blockedDeliveryPipeline{Transcriber: transcriber, deliveryEntered: make(chan struct{}), thirdID: 13}
 	listener := newFakeListener(func(context.Context) error { return nil },
 		vad.SpeechEnded{Utterance: audio.Utterance{ID: 11}},
 		vad.SpeechEnded{Utterance: audio.Utterance{ID: 12}},
@@ -311,7 +313,7 @@ func TestRuntimeParentCancellationUnblocksBackpressuredTranscriber(t *testing.T)
 		t.Fatal("STT did not start")
 	}
 	select {
-	case <-pipeline.thirdHandle:
+	case <-pipeline.deliveryEntered:
 	case <-time.After(time.Second):
 		cancel()
 		waitRuntime(t, done)
@@ -356,19 +358,19 @@ func waitRuntime(t *testing.T, done <-chan error) {
 	}
 }
 
-func TestRuntimeListenerFailureUnblocksBackpressuredTranscriber(t *testing.T) {
+func TestRuntimeListenerFailureUnblocksBlockedDelivery(t *testing.T) {
 	listenerErr := errors.New("listener failed while closing")
 	transcribeStarted := make(chan struct{})
 	transcriber, err := NewTranscriber(fakeSTTClient{transcribe: func(ctx context.Context, _ audio.Utterance) (stt.Transcript, error) {
 		close(transcribeStarted)
 		<-ctx.Done()
 		return stt.Transcript{}, ctx.Err()
-	}}, func(context.Context, Transcription) error { return nil }, 1)
+	}}, func(context.Context, Transcription) error { return nil }, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
 	thirdHandle := make(chan struct{})
-	pipeline := &observingPipeline{Transcriber: transcriber, thirdHandle: thirdHandle}
+	pipeline := &blockedDeliveryPipeline{Transcriber: transcriber, deliveryEntered: thirdHandle}
 	listener := &gatedFailingListener{
 		events: make(chan vad.Event, 3), release: make(chan struct{}), err: listenerErr,
 	}
@@ -417,7 +419,7 @@ func TestRuntimeDrainsRealTranscriberAtListenerEOF(t *testing.T) {
 	}}, func(_ context.Context, result Transcription) error {
 		received = append(received, result.UtteranceID)
 		return nil
-	}, 1)
+	}, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -450,3 +452,39 @@ func TestCleanupErrorSuppressesOnlyPureSharedCancellation(t *testing.T) {
 		t.Fatalf("pure shared cancellation returned %v", got)
 	}
 }
+
+func TestCancellationOnlyRequiresEveryLeafToBeAllowed(t *testing.T) {
+	sentinel := errors.New("ошибка очистки")
+	for _, test := range []struct {
+		name    string
+		err     error
+		allowed []error
+		want    bool
+	}{
+		{name: "wrapped allowed cause", err: fmt.Errorf("обёртка: %w", context.Canceled), allowed: []error{context.Canceled}, want: true},
+		{name: "mixed allowed causes", err: errors.Join(context.Canceled, ErrSpeechInterrupted), allowed: []error{context.Canceled, ErrSpeechInterrupted}, want: true},
+		{name: "independent joined error", err: errors.Join(context.Canceled, sentinel), allowed: []error{context.Canceled, ErrSpeechInterrupted}},
+		{name: "deadline is not cancellation", err: context.DeadlineExceeded, allowed: []error{context.Canceled, ErrSpeechInterrupted}},
+		{name: "nil error", allowed: []error{context.Canceled}},
+		{name: "no allowed causes", err: context.Canceled},
+		{name: "only nil allowed causes", err: context.Canceled, allowed: []error{nil}},
+		{name: "empty error tree", err: emptyErrorTree{}, allowed: []error{context.Canceled}},
+		{name: "error tree without nonnil leaves", err: nilErrorTree{}, allowed: []error{context.Canceled}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := cancellationOnly(test.err, test.allowed...); got != test.want {
+				t.Fatalf("cancellationOnly(%v)=%v, want %v", test.err, got, test.want)
+			}
+		})
+	}
+}
+
+type emptyErrorTree struct{}
+
+func (emptyErrorTree) Error() string   { return "пустое дерево ошибок" }
+func (emptyErrorTree) Unwrap() []error { return nil }
+
+type nilErrorTree struct{}
+
+func (nilErrorTree) Error() string   { return "дерево без причин" }
+func (nilErrorTree) Unwrap() []error { return []error{nil} }

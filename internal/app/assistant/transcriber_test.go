@@ -88,7 +88,7 @@ func TestTranscriberQueueBackpressureRespectsContext(t *testing.T) {
 }
 
 func TestTranscriberErrorsAndCancellation(t *testing.T) {
-	wantErr := errors.New("stt failed")
+	wantErr := errors.New("ошибка STT")
 	transcriber, _ := NewTranscriber(fakeSTTClient{transcribe: func(context.Context, audio.Utterance) (stt.Transcript, error) { return stt.Transcript{}, wantErr }}, func(context.Context, Transcription) error { return nil }, 1)
 	_ = transcriber.Handle(context.Background(), vad.SpeechEnded{Utterance: audio.Utterance{ID: 1}})
 	transcriber.CloseInput()
@@ -96,7 +96,7 @@ func TestTranscriberErrorsAndCancellation(t *testing.T) {
 		t.Fatalf("Run error=%v", err)
 	}
 
-	handlerErr := errors.New("handler failed")
+	handlerErr := errors.New("ошибка обработчика")
 	transcriber, _ = NewTranscriber(fakeSTTClient{transcribe: func(context.Context, audio.Utterance) (stt.Transcript, error) { return stt.Transcript{}, nil }}, func(context.Context, Transcription) error { return handlerErr }, 1)
 	_ = transcriber.Handle(context.Background(), vad.SpeechEnded{Utterance: audio.Utterance{ID: 2}})
 	transcriber.CloseInput()
@@ -143,4 +143,222 @@ func TestNewTranscriberRejectsInvalidDependenciesAndCloseInputIsIdempotent(t *te
 	if err := transcriber.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestTranscriberSpeechStartCancelsActiveHandlerWithoutStartingAnother(t *testing.T) {
+	entered := make(chan Transcription, 2)
+	ctxCancelled := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var releaseFirstOnce sync.Once
+	transcriber, err := NewTranscriber(fakeSTTClient{transcribe: func(context.Context, audio.Utterance) (stt.Transcript, error) {
+		return stt.Transcript{Text: "текст"}, nil
+	}}, func(ctx context.Context, result Transcription) error {
+		entered <- result
+		if result.UtteranceID == 1 {
+			<-ctx.Done()
+			close(ctxCancelled)
+			<-releaseFirst
+			return ctx.Err()
+		}
+		return nil
+	}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDone := make(chan error, 1)
+	go func() { runDone <- transcriber.Run(context.Background()) }()
+	runDoneObserved := false
+	t.Cleanup(func() {
+		releaseFirstOnce.Do(func() { close(releaseFirst) })
+		transcriber.CloseInput()
+		if !runDoneObserved {
+			<-runDone
+		}
+	})
+	if err := transcriber.Handle(context.Background(), vad.SpeechEnded{Utterance: audio.Utterance{ID: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-entered; got.UtteranceID != 1 {
+		t.Fatalf("первый обработчик получил %+v", got)
+	}
+	if err := transcriber.Handle(context.Background(), vad.SpeechStarted{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ctxCancelled:
+	case <-time.After(time.Second):
+		t.Fatal("контекст активного обработчика не отменён")
+	}
+	if err := transcriber.Handle(context.Background(), vad.SpeechEnded{Utterance: audio.Utterance{ID: 2}}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-entered:
+		t.Fatalf("второй обработчик запущен до возврата первого: %+v", got)
+	default:
+	}
+	releaseFirstOnce.Do(func() { close(releaseFirst) })
+	if got := <-entered; got.UtteranceID != 2 {
+		t.Fatalf("второй обработчик получил %+v", got)
+	}
+	transcriber.CloseInput()
+	if err := <-runDone; err != nil {
+		t.Fatal(err)
+	}
+	runDoneObserved = true
+}
+
+func TestTranscriberSpeechStartReplacesQueuedGenerationAndQueueFullIsImmediate(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	var mu sync.Mutex
+	var seen []uint64
+	transcriber, err := NewTranscriber(fakeSTTClient{transcribe: func(_ context.Context, utterance audio.Utterance) (stt.Transcript, error) {
+		mu.Lock()
+		seen = append(seen, utterance.ID)
+		first := len(seen) == 1
+		mu.Unlock()
+		if first {
+			close(started)
+			<-release
+		}
+		return stt.Transcript{}, nil
+	}}, func(context.Context, Transcription) error { return nil }, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDone := make(chan error, 1)
+	go func() { runDone <- transcriber.Run(context.Background()) }()
+	runDoneObserved := false
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(release) })
+		transcriber.CloseInput()
+		if !runDoneObserved {
+			<-runDone
+		}
+	})
+	if err := transcriber.Handle(context.Background(), vad.SpeechEnded{Utterance: audio.Utterance{ID: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if err := transcriber.Handle(context.Background(), vad.SpeechEnded{Utterance: audio.Utterance{ID: 2}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := transcriber.Handle(context.Background(), vad.SpeechEnded{Utterance: audio.Utterance{ID: 3}}); !errors.Is(err, ErrTranscriptionQueueFull) {
+		t.Fatalf("ошибка полной очереди=%v", err)
+	}
+	if err := transcriber.Handle(context.Background(), vad.SpeechStarted{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := transcriber.Handle(context.Background(), vad.SpeechEnded{Utterance: audio.Utterance{ID: 4}}); err != nil {
+		t.Fatalf("новое поколение не принято: %v", err)
+	}
+	releaseOnce.Do(func() { close(release) })
+	transcriber.CloseInput()
+	if err := <-runDone; err != nil {
+		t.Fatal(err)
+	}
+	runDoneObserved = true
+	mu.Lock()
+	defer mu.Unlock()
+	if !reflect.DeepEqual(seen, []uint64{1, 4}) {
+		t.Fatalf("обработанные реплики=%v, ожидалось [1 4]", seen)
+	}
+}
+
+func TestTranscriberInputClosedAndGenerationOverflow(t *testing.T) {
+	transcriber, err := NewTranscriber(fakeSTTClient{transcribe: func(context.Context, audio.Utterance) (stt.Transcript, error) {
+		return stt.Transcript{}, nil
+	}}, func(context.Context, Transcription) error { return nil }, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transcriber.generation = maxInputGeneration - 1
+	if err := transcriber.Handle(context.Background(), vad.SpeechStarted{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := transcriber.Handle(context.Background(), vad.SpeechStarted{}); !errors.Is(err, ErrTranscriptionGeneration) {
+		t.Fatalf("ошибка переполнения поколения=%v", err)
+	}
+	transcriber.CloseInput()
+	transcriber.CloseInput()
+	if err := transcriber.Handle(context.Background(), vad.SpeechEnded{}); !errors.Is(err, ErrTranscriptionInputClosed) {
+		t.Fatalf("ошибка закрытого входа=%v", err)
+	}
+	if err := transcriber.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTranscriberLateSuccessfulSTTIsNotHandledAfterInterrupt(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	handled := make(chan struct{}, 1)
+	transcriber, err := NewTranscriber(fakeSTTClient{transcribe: func(ctx context.Context, _ audio.Utterance) (stt.Transcript, error) {
+		close(started)
+		<-ctx.Done()
+		<-release
+		return stt.Transcript{Text: "поздний результат"}, nil
+	}}, func(context.Context, Transcription) error { handled <- struct{}{}; return nil }, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDone := make(chan error, 1)
+	go func() { runDone <- transcriber.Run(context.Background()) }()
+	runDoneObserved := false
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(release) })
+		transcriber.CloseInput()
+		if !runDoneObserved {
+			<-runDone
+		}
+	})
+	if err := transcriber.Handle(context.Background(), vad.SpeechEnded{Utterance: audio.Utterance{ID: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if err := transcriber.Handle(context.Background(), vad.SpeechStarted{}); err != nil {
+		t.Fatal(err)
+	}
+	releaseOnce.Do(func() { close(release) })
+	transcriber.CloseInput()
+	if err := <-runDone; err != nil {
+		t.Fatal(err)
+	}
+	runDoneObserved = true
+	select {
+	case <-handled:
+		t.Fatal("поздний результат STT передан обработчику")
+	default:
+	}
+}
+
+func TestTranscriberReturnsIndependentHandlerFailureDuringInterrupt(t *testing.T) {
+	sentinel := errors.New("ошибка обработчика")
+	entered := make(chan struct{})
+	transcriber, err := NewTranscriber(fakeSTTClient{transcribe: func(context.Context, audio.Utterance) (stt.Transcript, error) {
+		return stt.Transcript{}, nil
+	}}, func(ctx context.Context, _ Transcription) error {
+		close(entered)
+		<-ctx.Done()
+		return errors.Join(ctx.Err(), sentinel)
+	}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := transcriber.Handle(context.Background(), vad.SpeechEnded{Utterance: audio.Utterance{ID: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	runDone := make(chan error, 1)
+	go func() { runDone <- transcriber.Run(context.Background()) }()
+	<-entered
+	if err := transcriber.Handle(context.Background(), vad.SpeechStarted{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-runDone; !errors.Is(err, sentinel) {
+		t.Fatalf("Run() потерял независимую ошибку handler: %v", err)
+	}
+	transcriber.CloseInput()
 }

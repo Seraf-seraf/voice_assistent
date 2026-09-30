@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -102,7 +103,7 @@ func (e *Engine) Synthesize(ctx context.Context, text string) (audio.PCM, error)
 	}
 	pcm, err := e.backend.synthesize(ctx, text)
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		if err != nil {
+		if err != nil && !sameErrorValue(err, ctxErr) {
 			return audio.PCM{}, errors.Join(ctxErr, fmt.Errorf("%w: вызов синтезатора: %w", ErrSynthesis, err))
 		}
 		return audio.PCM{}, ctxErr
@@ -124,6 +125,14 @@ func (e *Engine) Synthesize(ctx context.Context, text string) (audio.PCM, error)
 	}
 	pcm.Samples = append([]float32(nil), pcm.Samples...)
 	return pcm, nil
+}
+
+func sameErrorValue(err, cause error) bool {
+	errType := reflect.TypeOf(err)
+	if errType == nil || errType != reflect.TypeOf(cause) || !errType.Comparable() {
+		return false
+	}
+	return err == cause
 }
 
 func (e *Engine) Close() error {
