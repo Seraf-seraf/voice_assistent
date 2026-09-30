@@ -2,135 +2,26 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/signal"
 
-	"github.com/Seraf-seraf/voice_assistent/internal/assistant"
-	"github.com/Seraf-seraf/voice_assistent/internal/config"
-	"github.com/Seraf-seraf/voice_assistent/internal/logger"
+	"github.com/Seraf-seraf/voice_assistent/internal/bootstrap"
 )
 
 func main() {
-	err := func() error {
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-		defer stop()
-		return run(ctx)
-	}()
-	if err != nil {
+	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Ошибка запуска: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context) (resultErr error) {
+func run() error {
 	configPath := flag.String("config", "", "путь к YAML-конфигурации")
 	flag.Parse()
 
-	cfg, err := config.Load(*configPath)
-	if err != nil {
-		return fmt.Errorf("загрузить конфигурацию: %w", err)
-	}
-
-	log, err := logger.New(logger.Options{
-		Level:  cfg.Log.Level,
-		Format: cfg.Log.Format,
-	})
-	if err != nil {
-		return fmt.Errorf("создать журнал: %w", err)
-	}
-
-	log.Info("Конфигурация загружена", "режим", cfg.App.Mode)
-	normalizer, err := newTranscriptNormalizer(cfg.Transcript)
-	if err != nil {
-		return fmt.Errorf("создать нормализатор транскрипта: %w", err)
-	}
-	controlRouter, err := newControlRouter(cfg.App, cfg.Wake)
-	if err != nil {
-		return fmt.Errorf("создать маршрутизатор команд: %w", err)
-	}
-	manager, err := newDialogueManager(cfg.App, cfg.Dialogue)
-	if err != nil {
-		return fmt.Errorf("создать менеджер диалога: %w", err)
-	}
-	generationOptions, err := newGenerationOptions(cfg.LLM)
-	if err != nil {
-		return fmt.Errorf("проверить параметры генерации: %w", err)
-	}
-	responseOutput, err := newResponseOutput(os.Stdout)
-	if err != nil {
-		return fmt.Errorf("создать вывод ответа: %w", err)
-	}
-	var selectedResponseSink assistant.ResponseSink = responseOutput
-	if cfg.TTS.ModelDir != "" {
-		spokenOutput, cleanupSpeechOutput, err := newSpeechOutput(ctx, cfg.TTS, cfg.Audio.OutputDevice, responseOutput)
-		if err != nil {
-			return fmt.Errorf("создать речевой вывод: %w", err)
-		}
-		selectedResponseSink = spokenOutput
-		defer func() {
-			if err := cleanupSpeechOutput(); err != nil {
-				resultErr = errors.Join(resultErr, fmt.Errorf("закрыть речевой вывод: %w", err))
-			}
-		}()
-	}
-	sttClient, err := newSTTClient(cfg.STT)
-	if err != nil {
-		return fmt.Errorf("создать клиент STT: %w", err)
-	}
-	generator, err := newLocalGenerator(ctx, cfg.LLM)
-	if err != nil {
-		return fmt.Errorf("загрузить локальную LLM: %w", err)
-	}
-	defer func() {
-		if err := generator.Close(); err != nil {
-			resultErr = errors.Join(resultErr, fmt.Errorf("закрыть локальную LLM: %w", err))
-		}
-	}()
-	responder, err := assistant.NewResponder(manager, generator, generationOptions, selectedResponseSink)
-	if err != nil {
-		return fmt.Errorf("создать обработчик ответа: %w", err)
-	}
-	processor, err := newInputProcessor(normalizer, controlRouter, manager, responder.Handle, log)
-	if err != nil {
-		return fmt.Errorf("создать обработчик ввода: %w", err)
-	}
-	transcriber, err := newTranscriber(sttClient, log, processor, os.Stdout)
-	if err != nil {
-		return fmt.Errorf("создать компонент распознавания: %w", err)
-	}
-
-	format := newAudioFormat(cfg.Audio)
-	components, err := newVADComponents(format, cfg.VAD)
-	if err != nil {
-		return fmt.Errorf("создать VAD: %w", err)
-	}
-	audioInput, err := newAudioInputComponents(format, cfg.Audio, components)
-	if err != nil {
-		return closeStartupDetector(log, components, fmt.Errorf("создать аудиовход: %w", err))
-	}
-	runtime, err := newAssistantRuntime(audioInput.listener, transcriber)
-	if err != nil {
-		return closeStartupAudioInput(log, audioInput, components, fmt.Errorf("создать среду выполнения: %w", err))
-	}
-	return runtime.Run(ctx)
-}
-
-func closeStartupDetector(log *slog.Logger, components vadComponents, cause error) error {
-	if err := components.detector.Close(); err != nil {
-		log.Error("Закрыть детектор VAD", "ошибка", err)
-		return errors.Join(cause, fmt.Errorf("закрыть детектор VAD: %w", err))
-	}
-	return cause
-}
-
-func closeStartupAudioInput(log *slog.Logger, audioInput audioInputComponents, components vadComponents, cause error) error {
-	if err := audioInput.source.Close(); err != nil {
-		log.Error("Закрыть источник аудио", "ошибка", err)
-		cause = errors.Join(cause, fmt.Errorf("закрыть источник аудио: %w", err))
-	}
-	return closeStartupDetector(log, components, cause)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	return bootstrap.Run(ctx, *configPath)
 }

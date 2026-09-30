@@ -1,0 +1,123 @@
+package bootstrap
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"reflect"
+
+	"github.com/Seraf-seraf/voice_assistent/internal/app/assistant"
+)
+
+type responseOutput struct {
+	output      io.Writer
+	active      bool
+	utteranceID uint64
+	turnID      uint64
+}
+
+var _ assistant.ResponseSink = (*responseOutput)(nil)
+
+func newResponseOutput(output io.Writer) (*responseOutput, error) {
+	if output == nil || isNilWriter(output) {
+		return nil, errors.New("вывод ответа обязателен")
+	}
+	return &responseOutput{output: output}, nil
+}
+
+func (o *responseOutput) Push(ctx context.Context, delta assistant.ResponseDelta) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if delta.Text == "" {
+		return errors.New("дельта ответа не должна быть пустой")
+	}
+	if o.active {
+		if delta.UtteranceID != o.utteranceID || delta.TurnID != o.turnID {
+			return errors.New("дельта ответа не совпадает с активным ходом")
+		}
+	} else {
+		o.active = true
+		o.utteranceID = delta.UtteranceID
+		o.turnID = delta.TurnID
+		if err := writeExact(o.output, "Ассистент: "); err != nil {
+			return fmt.Errorf("записать префикс ответа: %w", err)
+		}
+	}
+	if err := writeExact(o.output, delta.Text); err != nil {
+		return fmt.Errorf("записать дельту ответа: %w", err)
+	}
+	return nil
+}
+
+func (o *responseOutput) Complete(ctx context.Context, response assistant.Response) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !o.active || response.UtteranceID != o.utteranceID || response.TurnID != o.turnID {
+		return errors.New("ответ не совпадает с активным потоком")
+	}
+	if err := writeExact(o.output, "\n"); err != nil {
+		return fmt.Errorf("завершить строку ответа: %w", err)
+	}
+	o.reset()
+	return nil
+}
+
+func (o *responseOutput) Abort(_ context.Context, abort assistant.ResponseAbort) error {
+	if !o.active {
+		return nil
+	}
+	if abort.UtteranceID != o.utteranceID || abort.TurnID != o.turnID {
+		return errors.New("отмена ответа не совпадает с активным потоком")
+	}
+	err := writeExact(o.output, "\n")
+	o.reset()
+	if err != nil {
+		return fmt.Errorf("завершить строку отменённого ответа: %w", err)
+	}
+	return nil
+}
+
+func (o *responseOutput) reset() {
+	o.active = false
+	o.utteranceID = 0
+	o.turnID = 0
+}
+
+func writeExact(output io.Writer, text string) error {
+	written, err := io.WriteString(output, text)
+	if err != nil {
+		return err
+	}
+	if written != len(text) {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
+func newTranscriptionOutput(output io.Writer) (assistant.TranscriptionHandler, error) {
+	if output == nil || isNilWriter(output) {
+		return nil, errors.New("вывод распознанного текста обязателен")
+	}
+	return func(ctx context.Context, transcription assistant.Transcription) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := writeExact(output, "Вы: "+transcription.Text+"\n"); err != nil {
+			return fmt.Errorf("записать распознанный текст: %w", err)
+		}
+		return nil
+	}, nil
+}
+
+func isNilWriter(output io.Writer) bool {
+	value := reflect.ValueOf(output)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}

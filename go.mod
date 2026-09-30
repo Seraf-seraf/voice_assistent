@@ -5,8 +5,10 @@ go 1.26.0
 toolchain go1.27.1
 
 require (
+	github.com/ebitengine/purego v0.10.0
 	github.com/gen2brain/malgo v0.11.25
 	github.com/k2-fsa/sherpa-onnx-go-linux v1.12.35
+	github.com/k2-fsa/sherpa-onnx-go-windows v1.12.35
 	github.com/robotn/gohook v0.42.3
 	github.com/rolandhe/go-vad v0.0.0-20260516173913-73b02b0699ec
 	github.com/youpy/go-wav v0.3.2
@@ -15,7 +17,6 @@ require (
 
 require (
 	github.com/ardanlabs/jinja v1.1.0 // indirect
-	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/jupiterrider/ffi v0.7.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 )

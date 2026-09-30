@@ -14,6 +14,8 @@ github.com/jupiterrider/ffi v0.7.0 h1:RKsl6Ascal+3kyAqR5Qcbp83LceQMLc1VZbPfHWoNz
 github.com/jupiterrider/ffi v0.7.0/go.mod h1:9dauhpOfNqrqk28fxuu0kkdeFtT9Qr4vbfigiuIXN7c=
 github.com/k2-fsa/sherpa-onnx-go-linux v1.12.35 h1:Ri+uKWtMvAXPEo3lY6UDJR23AybX/6F8CFgj/HrlxWo=
 github.com/k2-fsa/sherpa-onnx-go-linux v1.12.35/go.mod h1:NXEH2rsBgTdqY59YpPq6CtSBlBAXy/8a9FmpLERU97I=
+github.com/k2-fsa/sherpa-onnx-go-windows v1.12.35 h1:gKUqpwPTSdt6c8EF0urF8el1TY2MFI9NlLBoGUJyxhU=
+github.com/k2-fsa/sherpa-onnx-go-windows v1.12.35/go.mod h1:5AX7TU8+P/gInjglY1ijtWUM2b8iyR0QX4yEngzMe64=
 github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=
 github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=

@@ -11,7 +11,7 @@ log:
 
 audio:
   input_device: ""
-  output_device: "" # В Linux TTS это имя ALSA PCM, не ID устройства захвата.
+  output_device: "" # Имя выхода PulseAudio в Linux или WASAPI в Windows; пусто — системный default.
   sample_rate: 16000
   channels: 1
   frame_ms: 20
